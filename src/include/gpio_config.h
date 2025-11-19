@@ -1,0 +1,256 @@
+/**
+ * @file gpio_config.h
+ * @brief GPIO引脚配置定义 / GPIO Pin Configuration Definitions
+ * 
+ * 本文件定义了ESP32项目中所有使用的GPIO引脚
+ * This file defines all GPIO pins used in the ESP32 project
+ */
+
+#ifndef GPIO_CONFIG_H
+#define GPIO_CONFIG_H
+
+#include "driver/gpio.h"
+#include "hal/adc_types.h"
+
+/* ========== 电机驱动器引脚 / Motor Driver Pins (L298N) ========== */
+
+/**
+ * L298N IN1 引脚 - 控制电机方向位1
+ * L298N IN1 Pin - Motor direction control bit 1
+ */
+#define MOTOR_IN1_GPIO          GPIO_NUM_7
+
+/**
+ * L298N IN2 引脚 - 控制电机方向位2
+ * L298N IN2 Pin - Motor direction control bit 2
+ */
+#define MOTOR_IN2_GPIO          GPIO_NUM_6
+
+/**
+ * L298N ENA (PWM) 引脚 - 控制电机速度
+ * L298N ENA (PWM) Pin - Motor speed control
+ */
+#define MOTOR_PWM_GPIO          GPIO_NUM_15
+
+/* ========== 电机2驱动器引脚 / Motor 2 Driver Pins (L298N) ========== */
+
+/**
+ * L298N IN3 引脚 - 控制电机2方向位1
+ * L298N IN3 Pin - Motor 2 direction control bit 1
+ */
+#define MOTOR2_IN1_GPIO         GPIO_NUM_37
+
+/**
+ * L298N IN4 引脚 - 控制电机2方向位2
+ * L298N IN4 Pin - Motor 2 direction control bit 2
+ */
+#define MOTOR2_IN2_GPIO         GPIO_NUM_38
+
+/**
+ * L298N ENB (PWM) 引脚 - 控制电机2速度
+ * L298N ENB (PWM) Pin - Motor 2 speed control
+ */
+#define MOTOR2_PWM_GPIO         GPIO_NUM_39
+
+
+/* ========== 编码器引脚 / Encoder Pins ========== */
+
+/**
+ * 编码器A相信号引脚 (黄色线)
+ * Encoder Channel A Signal Pin (Yellow wire)
+ */
+#define ENCODER_A_GPIO          GPIO_NUM_4
+
+/**
+ * 编码器B相信号引脚 (绿色线)
+ * Encoder Channel B Signal Pin (Green wire)
+ */
+#define ENCODER_B_GPIO          GPIO_NUM_5
+
+
+/* ========== 编码器2引脚 / Encoder 2 Pins ========== */
+
+/**
+ * 编码器2 A相信号引脚 (黄色线)
+ * Encoder 2 Channel A Signal Pin (Yellow wire)
+ */
+#define ENCODER2_A_GPIO         GPIO_NUM_40
+
+/**
+ * 编码器2 B相信号引脚 (绿色线)
+ * Encoder 2 Channel B Signal Pin (Green wire)
+ */
+#define ENCODER2_B_GPIO         GPIO_NUM_41
+
+
+/* ========== I2C总线引脚 / I2C Bus Pins ========== */
+
+/**
+ * I2C SDA引脚 - 数据线
+ * I2C SDA Pin - Data Line
+ */
+#define I2C_SDA_GPIO            GPIO_NUM_21
+
+/**
+ * I2C SCL引脚 - 时钟线
+ * I2C SCL Pin - Clock Line
+ */
+#define I2C_SCL_GPIO            GPIO_NUM_20
+
+/**
+ * I2C总线频率
+ * I2C Bus Frequency
+ */
+#define I2C_FREQ_HZ             100000  // 100kHz
+
+/**
+ * TCA9548A I2C多路复用器地址
+ * TCA9548A I2C Multiplexer Address
+ */
+#define TCA9548A_ADDR           0x70
+
+
+/* ========== 传感器通道定义 / Sensor Channel Definitions ========== */
+
+/**
+ * VL53L0X ToF传感器通道分配 (通过TCA9548A)
+ * VL53L0X ToF Sensor Channel Assignment (via TCA9548A)
+ */
+#define TOF_LEFT_CHANNEL        0  // 左侧ToF传感器 / Left side ToF
+#define TOF_RIGHT_CHANNEL       1  // 右侧ToF传感器 / Right side ToF
+#define TOF_TOP_CHANNEL         2  // 顶部ToF传感器 / Top ToF
+
+/**
+ * MPU6050 IMU传感器通道 (通过TCA9548A)
+ * MPU6050 IMU Sensor Channel (via TCA9548A)
+ */
+#define IMU_CHANNEL             3  // IMU传感器 / IMU sensor
+
+
+/* ========== Vive定位传感器引脚 / Vive Positioning Sensor Pins ========== */
+
+/**
+ * Vive传感器1信号引脚
+ * Vive Sensor 1 Signal Pin
+ */
+#define VIVE1_SIGNAL_GPIO       GPIO_NUM_34
+
+/**
+ * Vive传感器2信号引脚
+ * Vive Sensor 2 Signal Pin
+ */
+#define VIVE2_SIGNAL_GPIO       GPIO_NUM_35
+
+
+/* ========== 用户输入引脚 / User Input Pins ========== */
+
+/**
+ * 电位器模拟输入引脚 - 用于控制PWM占空比
+ * Potentiometer Analog Input Pin - Controls PWM duty cycle
+ * ESP32-S3: 使用 GPIO 16 (ADC2_CH5)
+ * ADC2可用通道: CH0-CH9 对应 GPIO 11-20
+ */
+#define POT_ADC_GPIO            GPIO_NUM_16
+#define POT_ADC_CHANNEL         ADC_CHANNEL_5  // GPIO 16 = ADC2_CH5
+
+/**
+ * 按钮开关引脚 - 控制电机启动/停止
+ * Push Button Pin - Controls motor START/STOP
+ * ESP32-S3: 使用 GPIO 7
+ * 使用内部上拉电阻，按下时为低电平
+ * Uses internal pull-up, active LOW when pressed
+ */
+#define BUTTON_GPIO             GPIO_NUM_42
+
+
+/* ========== 编码器参数 / Encoder Parameters ========== */
+
+/**
+ * 编码器每转脉冲数 (PPR)
+ * Encoder Pulses Per Revolution
+ * 计算: 12 PPR (霍尔传感器) × 45 (减速比) = 540 PPR
+ * Calculation: 12 PPR (Hall sensor) × 45 (Gear ratio) = 540 PPR
+ */
+#define ENCODER_PPR             540
+
+/**
+ * 正交编码器模式下每转计数 (4倍频)
+ * Counts per revolution in quadrature mode (4x decoding)
+ */
+#define ENCODER_CPR             (ENCODER_PPR * 4)  // 2160
+
+
+/* ========== PWM参数 / PWM Parameters ========== */
+
+/**
+ * PWM频率 (Hz)
+ * PWM Frequency in Hz
+ * 典型值: 1000-20000 Hz，这里使用5kHz
+ * Typical: 1000-20000 Hz, using 5kHz here
+ */
+#define MOTOR_PWM_FREQ_HZ       5000
+
+/**
+ * PWM占空比分辨率 (位)
+ * PWM Duty Cycle Resolution (bits)
+ * 10位 = 0-1023 范围
+ * 10-bit = 0-1023 range
+ */
+#define MOTOR_PWM_RESOLUTION    LEDC_TIMER_10_BIT
+
+/**
+ * PWM最大占空比值
+ * Maximum PWM duty cycle value
+ */
+#define MOTOR_PWM_MAX_DUTY      ((1 << 10) - 1)  // 1023
+
+
+/* ========== ADC参数 / ADC Parameters ========== */
+
+/**
+ * ADC最大值
+ * ADC Maximum Value
+ * 12位ADC: 0-4095 范围
+ * 12-bit ADC: 0-4095 range
+ */
+#define ADC_MAX_VALUE           4095
+
+
+/* ========== 按钮去抖参数 / Button Debounce Parameters ========== */
+
+/**
+ * 按钮去抖延迟 (毫秒)
+ * Button debounce delay in milliseconds
+ */
+#define BUTTON_DEBOUNCE_MS      50
+
+
+/* ========== 电机参数 / Motor Parameters ========== */
+
+/**
+ * 电机额定电压
+ * Motor Rated Voltage
+ */
+#define MOTOR_RATED_VOLTAGE     12.0f
+
+/**
+ * 电机空载转速 (RPM)
+ * Motor No-Load Speed in RPM
+ */
+#define MOTOR_NO_LOAD_RPM       130
+
+/**
+ * 电机减速比
+ * Motor Gear Reduction Ratio
+ */
+#define MOTOR_GEAR_RATIO        45
+
+/**
+ * 电机额定扭矩 (kg.cm)
+ * Motor Rated Torque in kg.cm
+ */
+#define MOTOR_RATED_TORQUE      1.2f
+
+
+#endif // GPIO_CONFIG_H
+
