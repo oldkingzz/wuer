@@ -63,8 +63,8 @@ static void vive_update_task(void *pvParameters)
         // Read both Vive sensors (safe even if not initialized)
         vive_read_all(&vive1_data, &vive2_data);
 
-        // Delay 10ms (100Hz update rate - Vive needs fast updates)
-        vTaskDelay(pdMS_TO_TICKS(10));
+        // Delay 20ms (50Hz update rate - balanced between responsiveness and CPU load)
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
@@ -141,7 +141,18 @@ static void status_monitor_task(void *pvParameters)
 
         // Print separator
         Serial.println();
-        Serial.println("========== Chassis Status ==========");
+        Serial.println("========== System Status ==========");
+
+        // Print system health
+        Serial.println("System Health:");
+        Serial.print("  Free Heap: ");
+        Serial.print(ESP.getFreeHeap());
+        Serial.println(" bytes");
+        Serial.print("  Min Free Heap: ");
+        Serial.print(ESP.getMinFreeHeap());
+        Serial.println(" bytes");
+
+        Serial.println();
 
         // Get chassis velocity
         chassis_velocity_t chassis_vel;
@@ -451,29 +462,42 @@ void setup()
     Serial.flush();
 
     // ========== Create Tasks ==========
+    // ESP32-S3 双核任务分配策略：
+    // Core 0: 传感器读取任务（I2C密集型）
+    // Core 1: 控制任务（实时性要求高）
 
     Serial.println("Creating control tasks...");
+    Serial.println("ESP32-S3 Dual Core Task Distribution:");
     Serial.flush();
 
-    // Create Vive positioning update task
-    xTaskCreate(vive_update_task, "vive_upd", 4096, NULL, 3, &vive_update_task_handle);
-    Serial.println("Task created: vive_update_task");
+    // ===== Core 0 任务 (传感器读取) =====
 
-    // Create sensor update task (ToF + IMU)
-    xTaskCreate(sensor_update_task, "sensor_upd", 4096, NULL, 3, &sensor_update_task_handle);
-    Serial.println("Task created: sensor_update_task");
+    // Create Vive positioning update task on Core 0
+    // Vive需要快速响应，但不需要实时控制
+    xTaskCreatePinnedToCore(vive_update_task, "vive_upd", 4096, NULL, 3, &vive_update_task_handle, 0);
+    Serial.println("  [Core 0] vive_update_task (Priority 3, 50Hz)");
 
-    // Create encoder update task (updates both encoders)
-    xTaskCreate(encoder_update_task, "encoder_upd", 2048, NULL, 4, &encoder_update_task_handle);
-    Serial.println("Task created: encoder_update_task");
+    // Create sensor update task (ToF + IMU) on Core 0
+    // I2C传感器读取，放在Core 0避免干扰控制
+    xTaskCreatePinnedToCore(sensor_update_task, "sensor_upd", 4096, NULL, 2, &sensor_update_task_handle, 0);
+    Serial.println("  [Core 0] sensor_update_task (Priority 2, 20Hz)");
 
-    // Create status monitoring task
-    xTaskCreate(status_monitor_task, "status_mon", 4096, NULL, 2, &status_monitor_task_handle);
-    Serial.println("Task created: status_monitor_task");
+    // Create status monitoring task on Core 0
+    // 低优先级，串口打印不影响控制
+    xTaskCreatePinnedToCore(status_monitor_task, "status_mon", 4096, NULL, 1, &status_monitor_task_handle, 0);
+    Serial.println("  [Core 0] status_monitor_task (Priority 1, 0.33Hz)");
 
-    // Create chassis control task
-    xTaskCreate(chassis_control_task, "chassis_ctrl", 3072, NULL, 5, &chassis_control_task_handle);
-    Serial.println("Task created: chassis_control_task");
+    // ===== Core 1 任务 (实时控制) =====
+
+    // Create encoder update task on Core 1
+    // 编码器读取需要实时性，放在Core 1
+    xTaskCreatePinnedToCore(encoder_update_task, "encoder_upd", 2048, NULL, 4, &encoder_update_task_handle, 1);
+    Serial.println("  [Core 1] encoder_update_task (Priority 4, 100Hz)");
+
+    // Create chassis control task on Core 1
+    // 最高优先级，实时控制电机
+    xTaskCreatePinnedToCore(chassis_control_task, "chassis_ctrl", 3072, NULL, 5, &chassis_control_task_handle, 1);
+    Serial.println("  [Core 1] chassis_control_task (Priority 5, 100Hz)");
 
     Serial.println();
     Serial.println("========================================");
@@ -481,6 +505,20 @@ void setup()
     Serial.println("Connect to WiFi and visit web interface");
     Serial.println("(IP address shown in WiFi init above)");
     Serial.println("========================================");
+    Serial.println();
+
+    // Print system information
+    Serial.println("System Information:");
+    Serial.print("  CPU Frequency: ");
+    Serial.print(getCpuFrequencyMhz());
+    Serial.println(" MHz");
+    Serial.print("  Free Heap: ");
+    Serial.print(ESP.getFreeHeap());
+    Serial.println(" bytes");
+    Serial.print("  Chip Model: ");
+    Serial.println(ESP.getChipModel());
+    Serial.print("  Chip Cores: ");
+    Serial.println(ESP.getChipCores());
     Serial.println();
     Serial.flush();
 }

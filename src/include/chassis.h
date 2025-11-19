@@ -17,8 +17,10 @@
 /**
  * 轮子直径 (mm)
  * Wheel diameter in millimeters
+ * 新轮子: 109mm (原来65mm)
+ * New wheel: 109mm (was 65mm)
  */
-#define CHASSIS_WHEEL_DIAMETER_MM   65.0f
+#define CHASSIS_WHEEL_DIAMETER_MM   109.0f
 
 /**
  * 轮子直径 (m)
@@ -29,6 +31,8 @@
 /**
  * 两轮间距/轮距 (mm)
  * Wheel base / distance between two wheels in millimeters
+ * 注意：如果更换了底盘，需要实际测量并更新此值
+ * Note: If chassis changed, measure and update this value
  */
 #define CHASSIS_WHEEL_BASE_MM       160.0f
 
@@ -41,6 +45,8 @@
 /**
  * 轮子周长 (m)
  * Wheel circumference in meters
+ * 计算: π × D = 3.14159 × 0.109m = 0.3424m
+ * Calculation: π × D = 3.14159 × 0.109m = 0.3424m
  */
 #define CHASSIS_WHEEL_CIRCUMFERENCE (3.14159265359f * CHASSIS_WHEEL_DIAMETER_M)
 
@@ -49,8 +55,14 @@
 /**
  * 最大线速度 (m/s)
  * Maximum linear velocity in m/s
+ *
+ * 计算基于: 100 RPM × 0.342m周长 / 60 = 0.57 m/s
+ * Based on: 100 RPM × 0.342m circumference / 60 = 0.57 m/s
+ *
+ * 注意：轮子从65mm增大到109mm后，同样RPM速度提升1.68倍
+ * Note: Wheel increased from 65mm to 109mm, speed increased 1.68x at same RPM
  */
-#define CHASSIS_MAX_LINEAR_VELOCITY     0.5f
+#define CHASSIS_MAX_LINEAR_VELOCITY     0.6f
 
 /**
  * 最大角速度 (rad/s)
@@ -61,8 +73,11 @@
 /**
  * 最大轮速 (RPM)
  * Maximum wheel speed in RPM
+ *
+ * 降低到60 RPM以保持安全速度 (约0.34 m/s)
+ * Reduced to 60 RPM to maintain safe speed (about 0.34 m/s)
  */
-#define CHASSIS_MAX_WHEEL_RPM           100
+#define CHASSIS_MAX_WHEEL_RPM           60
 
 /* ========== 底盘状态结构体 / Chassis State Structure ========== */
 

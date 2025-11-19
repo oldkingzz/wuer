@@ -166,18 +166,36 @@
 /* ========== 编码器参数 / Encoder Parameters ========== */
 
 /**
- * 编码器每转脉冲数 (PPR)
- * Encoder Pulses Per Revolution
- * 计算: 12 PPR (霍尔传感器) × 45 (减速比) = 540 PPR
- * Calculation: 12 PPR (Hall sensor) × 45 (Gear ratio) = 540 PPR
+ * 编码器每转脉冲数 (CPR - Counts Per Revolution)
+ * Encoder Counts Per Revolution (before quadrature decoding)
+ * 新电机: 64 CPR
+ * New motor: 64 CPR
  */
-#define ENCODER_PPR             540
+#define ENCODER_BASE_CPR        64
 
 /**
  * 正交编码器模式下每转计数 (4倍频)
  * Counts per revolution in quadrature mode (4x decoding)
+ * 计算: 64 CPR × 4 = 256
+ * Calculation: 64 CPR × 4 = 256
  */
-#define ENCODER_CPR             (ENCODER_PPR * 4)  // 2160
+#define ENCODER_CPR_4X          (ENCODER_BASE_CPR * 4)  // 256
+
+/**
+ * 电机减速比
+ * Motor Gear Reduction Ratio
+ * 新电机: 50:1
+ * New motor: 50:1
+ */
+#define MOTOR_GEAR_RATIO        50
+
+/**
+ * 轮子转一圈的总计数 (编码器CPR × 4倍频 × 减速比)
+ * Total counts per wheel revolution (Encoder CPR × 4x × Gear ratio)
+ * 计算: 64 × 4 × 50 = 12800
+ * Calculation: 64 × 4 × 50 = 12800
+ */
+#define ENCODER_CPR             (ENCODER_CPR_4X * MOTOR_GEAR_RATIO)  // 12800
 
 
 /* ========== PWM参数 / PWM Parameters ========== */
@@ -236,18 +254,16 @@
 /**
  * 电机空载转速 (RPM)
  * Motor No-Load Speed in RPM
+ * 新电机参数（需要根据实际电机更新）
+ * New motor parameters (update based on actual motor specs)
  */
 #define MOTOR_NO_LOAD_RPM       130
 
 /**
- * 电机减速比
- * Motor Gear Reduction Ratio
- */
-#define MOTOR_GEAR_RATIO        45
-
-/**
  * 电机额定扭矩 (kg.cm)
  * Motor Rated Torque in kg.cm
+ * 新电机参数（需要根据实际电机更新）
+ * New motor parameters (update based on actual motor specs)
  */
 #define MOTOR_RATED_TORQUE      1.2f
 

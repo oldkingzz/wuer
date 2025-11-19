@@ -145,11 +145,11 @@ esp_err_t encoder_init(void)
     
     // 初始化时间戳 / Initialize timestamp
     g_last_time_us = esp_timer_get_time();
-    
+
     ESP_LOGI(TAG, "编码器初始化成功 / Encoder initialized successfully");
-    ESP_LOGI(TAG, "编码器PPR: %d, CPR: %d / Encoder PPR: %d, CPR: %d", 
-             ENCODER_PPR, ENCODER_CPR);
-    
+    ESP_LOGI(TAG, "编码器参数 - Base CPR: %d, 4x: %d, Gear: %d, Total CPR: %d",
+             ENCODER_BASE_CPR, ENCODER_CPR_4X, MOTOR_GEAR_RATIO, ENCODER_CPR);
+
     return ESP_OK;
 }
 
@@ -189,7 +189,7 @@ int32_t encoder_get_total_count(void)
  */
 float encoder_get_revolutions(void)
 {
-    return (float)g_pulse_count / ENCODER_PPR;
+    return (float)g_pulse_count / ENCODER_CPR;
 }
 
 /**
@@ -214,11 +214,11 @@ esp_err_t encoder_update_speed(void)
     if (time_diff_s > 0.0f) {
         // 计算脉冲差 / Calculate pulse difference
         int32_t count_diff = current_count - g_last_count;
-        
+
         // 计算转速 (RPM) / Calculate speed (RPM)
-        // RPM = (脉冲差 / PPR) / 时间差(秒) * 60
-        // RPM = (pulse_diff / PPR) / time_diff(s) * 60
-        g_current_rpm = ((float)count_diff / ENCODER_PPR) / time_diff_s * 60.0f;
+        // RPM = (脉冲差 / CPR) / 时间差(秒) * 60
+        // RPM = (pulse_diff / CPR) / time_diff(s) * 60
+        g_current_rpm = ((float)count_diff / ENCODER_CPR) / time_diff_s * 60.0f;
         
         // 更新上次值 / Update last values
         g_last_count = current_count;
@@ -419,7 +419,7 @@ esp_err_t encoder2_get_data(encoder_data_t *data)
 
     data->pulse_count = g_pulse_count2;
     data->total_count = g_total_count2;
-    data->revolutions = (float)g_pulse_count2 / (float)ENCODER_PPR;
+    data->revolutions = (float)g_pulse_count2 / (float)ENCODER_CPR;
     data->rpm = g_current_rpm2;
     data->last_update_time = (uint32_t)(g_last_time_us2 / 1000);
 
@@ -440,7 +440,7 @@ esp_err_t encoder2_update_speed(void)
 
     int32_t delta_count = g_pulse_count2 - g_last_count2;
     float delta_time_s = (float)delta_time_us / 1000000.0f;
-    float delta_revolutions = (float)delta_count / (float)ENCODER_PPR;
+    float delta_revolutions = (float)delta_count / (float)ENCODER_CPR;
     g_current_rpm2 = (delta_revolutions / delta_time_s) * 60.0f;
 
     g_last_count2 = g_pulse_count2;
