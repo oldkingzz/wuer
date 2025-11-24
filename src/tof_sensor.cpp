@@ -48,8 +48,6 @@ static void tca_select(uint8_t channel)
 esp_err_t tof_init(void)
 {
     ESP_LOGI(TAG, "Initializing ToF sensors...");
-    Serial.println("Initializing ToF sensors via TCA9548A...");
-    Serial.flush();
 
     // Create mutex
     tof_mutex = xSemaphoreCreateMutex();
@@ -58,6 +56,11 @@ esp_err_t tof_init(void)
         Serial.println("ERROR: Failed to create ToF mutex");
         return ESP_FAIL;
     }
+
+#if USE_TCA9548A
+    // 使用TCA9548A模式
+    Serial.println("Initializing ToF sensors via TCA9548A...");
+    Serial.flush();
 
     // I2C is already initialized in Wire.begin() from main
     // Just verify we can communicate with TCA9548A
@@ -81,11 +84,20 @@ esp_err_t tof_init(void)
 
     Serial.println("Found!");
     Serial.flush();
+#else
+    // 直连模式（不使用TCA9548A）
+    Serial.println("Initializing ToF sensors (direct connection, no TCA9548A)...");
+    Serial.flush();
+#endif
 
-    // Initialize left ToF sensor (channel 0)
+    // Initialize left ToF sensor
+#if USE_TCA9548A
     tca_select(TOF_LEFT_CHANNEL);
     delay(10);
     Serial.print("Init ToF Left (Channel 0)... ");
+#else
+    Serial.print("Init ToF Left (Direct, 0x29)... ");
+#endif
     if (!lox_left.begin()) {
         ESP_LOGE(TAG, "Failed to init left ToF");
         Serial.println("Failed!");
@@ -96,7 +108,8 @@ esp_err_t tof_init(void)
         tof_left_initialized = true;
     }
 
-    // Initialize right ToF sensor (channel 1)
+#if USE_TCA9548A
+    // Initialize right ToF sensor (channel 1) - 仅在使用TCA9548A时
     tca_select(TOF_RIGHT_CHANNEL);
     delay(10);
     Serial.print("Init ToF Right (Channel 1)... ");
@@ -110,7 +123,7 @@ esp_err_t tof_init(void)
         tof_right_initialized = true;
     }
 
-    // Initialize top ToF sensor (channel 2)
+    // Initialize top ToF sensor (channel 2) - 仅在使用TCA9548A时
     tca_select(TOF_TOP_CHANNEL);
     delay(10);
     Serial.print("Init ToF Top (Channel 2)... ");
@@ -123,6 +136,12 @@ esp_err_t tof_init(void)
         Serial.println("Success!");
         tof_top_initialized = true;
     }
+#else
+    // 直连模式下，只能使用一个VL53L0X（地址0x29）
+    Serial.println("Note: Only one VL53L0X supported in direct mode");
+    tof_right_initialized = false;
+    tof_top_initialized = false;
+#endif
 
     ESP_LOGI(TAG, "ToF sensors initialization complete");
     return ESP_OK;
@@ -175,8 +194,10 @@ esp_err_t tof_read(tof_position_t position, tof_data_t *data)
     }
 
     // Select channel and read
+#if USE_TCA9548A
     tca_select(channel);
     delay(1);
+#endif
     sensor->rangingTest(&measure, false);
 
     // Store data

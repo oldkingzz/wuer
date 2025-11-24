@@ -104,10 +104,11 @@
 #define I2C_FREQ_HZ             100000  // 100kHz
 
 /**
- * TCA9548A I2C多路复用器地址
- * TCA9548A I2C Multiplexer Address
+ * TCA9548A I2C多路复用器配置
+ * TCA9548A I2C Multiplexer Configuration
  */
-#define TCA9548A_ADDR           0x70
+#define USE_TCA9548A            1       // 0=不使用TCA9548A（直连），1=使用TCA9548A
+#define TCA9548A_ADDR           0x70    // TCA9548A地址
 
 
 /* ========== 传感器通道定义 / Sensor Channel Definitions ========== */
@@ -116,9 +117,9 @@
  * VL53L0X ToF传感器通道分配 (通过TCA9548A)
  * VL53L0X ToF Sensor Channel Assignment (via TCA9548A)
  */
-#define TOF_LEFT_CHANNEL        0  // 左侧ToF传感器 / Left side ToF
-#define TOF_RIGHT_CHANNEL       1  // 右侧ToF传感器 / Right side ToF
-#define TOF_TOP_CHANNEL         2  // 顶部ToF传感器 / Top ToF
+#define TOF_LEFT_CHANNEL        1  // 左侧ToF传感器 / Left side ToF (实际连接在通道1)
+#define TOF_RIGHT_CHANNEL       2  // 右侧ToF传感器 / Right side ToF
+#define TOF_TOP_CHANNEL         0  // 顶部ToF传感器 / Top ToF
 
 /**
  * MPU6050 IMU传感器通道 (通过TCA9548A)
