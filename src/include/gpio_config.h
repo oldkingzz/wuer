@@ -18,17 +18,19 @@
  * L298N IN1 引脚 - 控制电机方向位1
  * L298N IN1 Pin - Motor direction control bit 1
  */
-#define MOTOR_IN1_GPIO          GPIO_NUM_7
+#define MOTOR_IN1_GPIO          GPIO_NUM_6
 
 /**
  * L298N IN2 引脚 - 控制电机方向位2
  * L298N IN2 Pin - Motor direction control bit 2
  */
-#define MOTOR_IN2_GPIO          GPIO_NUM_6
+#define MOTOR_IN2_GPIO          GPIO_NUM_7
 
 /**
  * L298N ENA (PWM) 引脚 - 控制电机速度
  * L298N ENA (PWM) Pin - Motor speed control
+ * 注意：避免使用GPIO 0, 3, 9, 45, 46 (Strapping Pins)
+ * Note: Avoid GPIO 0, 3, 9, 45, 46 (Strapping Pins)
  */
 #define MOTOR_PWM_GPIO          GPIO_NUM_15
 
@@ -38,13 +40,13 @@
  * L298N IN3 引脚 - 控制电机2方向位1
  * L298N IN3 Pin - Motor 2 direction control bit 1
  */
-#define MOTOR2_IN1_GPIO         GPIO_NUM_37
+#define MOTOR2_IN1_GPIO         GPIO_NUM_38
 
 /**
  * L298N IN4 引脚 - 控制电机2方向位2
  * L298N IN4 Pin - Motor 2 direction control bit 2
  */
-#define MOTOR2_IN2_GPIO         GPIO_NUM_38
+#define MOTOR2_IN2_GPIO         GPIO_NUM_37
 
 /**
  * L298N ENB (PWM) 引脚 - 控制电机2速度
@@ -134,13 +136,13 @@
  * Vive传感器1信号引脚
  * Vive Sensor 1 Signal Pin
  */
-#define VIVE1_SIGNAL_GPIO       GPIO_NUM_34
+#define VIVE1_SIGNAL_GPIO       GPIO_NUM_16
 
 /**
  * Vive传感器2信号引脚
  * Vive Sensor 2 Signal Pin
  */
-#define VIVE2_SIGNAL_GPIO       GPIO_NUM_35
+#define VIVE2_SIGNAL_GPIO       GPIO_NUM_42
 
 
 /* ========== 用户输入引脚 / User Input Pins ========== */

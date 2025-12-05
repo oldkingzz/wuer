@@ -30,6 +30,8 @@
 #include "src/include/tof_sensor.h"
 #include "src/include/imu_sensor.h"
 #include "src/include/vive_sensor.h"
+#include "src/include/vive_navigation.h"
+#include "src/include/wall_following.h"
 
 static const char *TAG = "MAIN";
 
@@ -444,7 +446,20 @@ void setup()
     Serial.println("OK: Chassis control initialized");
     Serial.flush();
 
-    Serial.println("Step 10/10: Initializing web server...");
+    // 在WiFi初始化前检查内存
+    Serial.println();
+    Serial.println("========================================");
+    Serial.println("Memory Status BEFORE WiFi Init:");
+    Serial.print("  Free Heap: ");
+    Serial.print(ESP.getFreeHeap());
+    Serial.println(" bytes");
+    Serial.print("  Largest Free Block: ");
+    Serial.print(ESP.getMaxAllocHeap());
+    Serial.println(" bytes");
+    Serial.println("========================================");
+    Serial.flush();
+
+    Serial.println("Step 10/11: Initializing web server...");
     Serial.flush();
     ret = web_server_init();
     if (ret != ESP_OK) {
@@ -453,6 +468,54 @@ void setup()
         while(1) { delay(1000); }
     }
     Serial.println("OK: Web server initialized");
+    Serial.flush();
+
+    // 在导航初始化前检查内存
+    Serial.println();
+    Serial.println("========================================");
+    Serial.println("Memory Status BEFORE Navigation Init:");
+    Serial.print("  Free Heap: ");
+    Serial.print(ESP.getFreeHeap());
+    Serial.println(" bytes");
+    Serial.print("  Largest Free Block: ");
+    Serial.print(ESP.getMaxAllocHeap());
+    Serial.println(" bytes");
+    Serial.println("========================================");
+    Serial.flush();
+
+    Serial.println("Step 11/12: Initializing navigation system...");
+    Serial.flush();
+
+    ret = vive_nav_init();
+    if (ret != ESP_OK) {
+        Serial.println("ERROR: Navigation init failed!");
+        Serial.flush();
+        while(1) { delay(1000); }
+    }
+    Serial.println("OK: Navigation system initialized");
+    Serial.flush();
+
+    // 导航初始化后检查内存
+    Serial.println();
+    Serial.println("========================================");
+    Serial.println("Memory Status AFTER Navigation Init:");
+    Serial.print("  Free Heap: ");
+    Serial.print(ESP.getFreeHeap());
+    Serial.println(" bytes");
+    Serial.print("  Largest Free Block: ");
+    Serial.print(ESP.getMaxAllocHeap());
+    Serial.println(" bytes");
+    Serial.println("========================================");
+    Serial.flush();
+
+    Serial.println("Step 12/12: Initializing wall following system...");
+    Serial.flush();
+    ret = wall_following_init();
+    if (ret != ESP_OK) {
+        Serial.println("WARNING: Wall following init failed (continuing anyway)");
+    } else {
+        Serial.println("OK: Wall following system initialized");
+    }
     Serial.flush();
 
     Serial.println();
@@ -474,30 +537,30 @@ void setup()
 
     // Create Vive positioning update task on Core 0
     // Vive需要快速响应，但不需要实时控制
-    xTaskCreatePinnedToCore(vive_update_task, "vive_upd", 4096, NULL, 3, &vive_update_task_handle, 0);
-    Serial.println("  [Core 0] vive_update_task (Priority 3, 50Hz)");
+    xTaskCreatePinnedToCore(vive_update_task, "vive_upd", 3072, NULL, 3, &vive_update_task_handle, 0);
+    Serial.println("  [Core 0] vive_update_task (Priority 3, 50Hz, Stack: 3KB)");
 
     // Create sensor update task (ToF + IMU) on Core 0
     // I2C传感器读取，放在Core 0避免干扰控制
-    xTaskCreatePinnedToCore(sensor_update_task, "sensor_upd", 4096, NULL, 2, &sensor_update_task_handle, 0);
-    Serial.println("  [Core 0] sensor_update_task (Priority 2, 20Hz)");
+    xTaskCreatePinnedToCore(sensor_update_task, "sensor_upd", 3072, NULL, 2, &sensor_update_task_handle, 0);
+    Serial.println("  [Core 0] sensor_update_task (Priority 2, 20Hz, Stack: 3KB)");
 
     // Create status monitoring task on Core 0
     // 低优先级，串口打印不影响控制
-    xTaskCreatePinnedToCore(status_monitor_task, "status_mon", 4096, NULL, 1, &status_monitor_task_handle, 0);
-    Serial.println("  [Core 0] status_monitor_task (Priority 1, 0.33Hz)");
+    xTaskCreatePinnedToCore(status_monitor_task, "status_mon", 2048, NULL, 1, &status_monitor_task_handle, 0);
+    Serial.println("  [Core 0] status_monitor_task (Priority 1, 0.33Hz, Stack: 2KB)");
 
     // ===== Core 1 任务 (实时控制) =====
 
     // Create encoder update task on Core 1
     // 编码器读取需要实时性，放在Core 1
     xTaskCreatePinnedToCore(encoder_update_task, "encoder_upd", 2048, NULL, 4, &encoder_update_task_handle, 1);
-    Serial.println("  [Core 1] encoder_update_task (Priority 4, 100Hz)");
+    Serial.println("  [Core 1] encoder_update_task (Priority 4, 100Hz, Stack: 2KB)");
 
     // Create chassis control task on Core 1
     // 最高优先级，实时控制电机
-    xTaskCreatePinnedToCore(chassis_control_task, "chassis_ctrl", 3072, NULL, 5, &chassis_control_task_handle, 1);
-    Serial.println("  [Core 1] chassis_control_task (Priority 5, 100Hz)");
+    xTaskCreatePinnedToCore(chassis_control_task, "chassis_ctrl", 2560, NULL, 5, &chassis_control_task_handle, 1);
+    Serial.println("  [Core 1] chassis_control_task (Priority 5, 100Hz, Stack: 2.5KB)");
 
     Serial.println();
     Serial.println("========================================");

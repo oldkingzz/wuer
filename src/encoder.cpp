@@ -41,16 +41,16 @@ static void IRAM_ATTR encoder_isr_handler(void* arg)
     uint8_t a_state = gpio_get_level(ENCODER_A_GPIO);
     uint8_t b_state = gpio_get_level(ENCODER_B_GPIO);
     uint8_t current_state = (a_state << 1) | b_state;
-    
+
     // 4倍频正交解码状态机 / 4x quadrature decoding state machine
     // 状态转换表 / State transition table
     // 正转序列: 00 -> 01 -> 11 -> 10 -> 00 (顺时针)
     // Forward: 00 -> 01 -> 11 -> 10 -> 00 (Clockwise)
     // 反转序列: 00 -> 10 -> 11 -> 01 -> 00 (逆时针)
     // Backward: 00 -> 10 -> 11 -> 01 -> 00 (Counter-clockwise)
-    
+
     uint8_t state_change = (g_last_state << 2) | current_state;
-    
+
     switch (state_change) {
         // 正转 / Forward
         case 0b0001:  // 00 -> 01
@@ -59,7 +59,7 @@ static void IRAM_ATTR encoder_isr_handler(void* arg)
         case 0b1000:  // 10 -> 00
             g_total_count++;
             break;
-            
+
         // 反转 / Backward
         case 0b0010:  // 00 -> 10
         case 0b1011:  // 10 -> 11
@@ -67,14 +67,14 @@ static void IRAM_ATTR encoder_isr_handler(void* arg)
         case 0b0100:  // 01 -> 00
             g_total_count--;
             break;
-            
+
         // 无效转换或噪声 / Invalid transition or noise
         default:
             break;
     }
-    
+
     g_last_state = current_state;
-    
+
     // 每4个计数增加一个脉冲 / Increment pulse every 4 counts
     g_pulse_count = g_total_count / 4;
 }
@@ -120,7 +120,7 @@ esp_err_t encoder_init(void)
     uint8_t a_state = gpio_get_level(ENCODER_A_GPIO);
     uint8_t b_state = gpio_get_level(ENCODER_B_GPIO);
     g_last_state = (a_state << 1) | b_state;
-    
+
     // 安装GPIO中断服务 / Install GPIO ISR service
     ret = gpio_install_isr_service(0);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
@@ -283,28 +283,34 @@ static void IRAM_ATTR encoder2_isr_handler(void* arg)
     uint8_t b_state = gpio_get_level(ENCODER2_B_GPIO);
     uint8_t current_state = (a_state << 1) | b_state;
 
-    uint8_t combined = (g_last_state2 << 2) | current_state;
+    uint8_t state_change = (g_last_state2 << 2) | current_state;
 
-    switch (combined) {
-        case 0b0001: case 0b0111: case 0b1110: case 0b1000:
+    switch (state_change) {
+        // 正转 / Forward
+        case 0b0001:  // 00 -> 01
+        case 0b0111:  // 01 -> 11
+        case 0b1110:  // 11 -> 10
+        case 0b1000:  // 10 -> 00
             g_total_count2++;
             break;
-        case 0b0010: case 0b1011: case 0b1101: case 0b0100:
+
+        // 反转 / Backward
+        case 0b0010:  // 00 -> 10
+        case 0b1011:  // 10 -> 11
+        case 0b1101:  // 11 -> 01
+        case 0b0100:  // 01 -> 00
             g_total_count2--;
             break;
+
+        // 无效转换或噪声 / Invalid transition or noise
         default:
             break;
     }
 
-    if (g_total_count2 % 4 == 0) {
-        if (combined == 0b0001 || combined == 0b0111 || combined == 0b1110 || combined == 0b1000) {
-            g_pulse_count2++;
-        } else if (combined == 0b0010 || combined == 0b1011 || combined == 0b1101 || combined == 0b0100) {
-            g_pulse_count2--;
-        }
-    }
-
     g_last_state2 = current_state;
+
+    // 每4个计数增加一个脉冲 / Increment pulse every 4 counts
+    g_pulse_count2 = g_total_count2 / 4;
 }
 
 /**
