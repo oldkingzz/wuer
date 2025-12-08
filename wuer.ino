@@ -82,7 +82,7 @@ static void sensor_update_task(void *pvParameters)
     Serial.println("Sensor update task started");
     Serial.flush();
 
-    tof_data_t left_tof, right_tof, top_tof;
+    tof_data_t top_tof, front_tof, left_front_tof, left_rear_tof;
     imu_data_t imu_data;
 
     // Wait a bit for sensors to stabilize
@@ -92,7 +92,8 @@ static void sensor_update_task(void *pvParameters)
 
     while (1) {
         // Read all ToF sensors (safe even if not initialized)
-        esp_err_t ret = tof_read_all(&left_tof, &right_tof, &top_tof);
+        // 新的参数顺序: top, front, left_front, left_rear
+        esp_err_t ret = tof_read_all(&top_tof, &front_tof, &left_front_tof, &left_rear_tof);
 
         // Read IMU data (safe even if not initialized)
         ret = imu_read(&imu_data);
@@ -213,31 +214,36 @@ static void status_monitor_task(void *pvParameters)
         Serial.println("Sensor Data:");
 
         // ToF sensors
-        uint16_t left_tof = tof_get_left_distance();
-        uint16_t right_tof = tof_get_right_distance();
-        uint16_t top_tof = tof_get_top_distance();
+        // 现在的实际布置：
+        //   SD1 -> 前方 ToF
+        //   SD2 -> 左前 ToF
+        //   SD3 -> 左后 ToF
+        //   SD0 暂不使用
+        uint16_t front_tof      = tof_get_front_distance();
+        uint16_t left_front_tof = tof_get_left_front_distance();
+        uint16_t left_rear_tof  = tof_get_left_rear_distance();
 
-        Serial.print("  Left ToF: ");
-        if (left_tof == 0xFFFF) {
+        Serial.print("  Front ToF (SD1): ");
+        if (front_tof == 0xFFFF) {
             Serial.println("N/A");
         } else {
-            Serial.print(left_tof);
+            Serial.print(front_tof);
             Serial.println(" mm");
         }
 
-        Serial.print("  Right ToF: ");
-        if (right_tof == 0xFFFF) {
+        Serial.print("  Left-Front ToF (SD2): ");
+        if (left_front_tof == 0xFFFF) {
             Serial.println("N/A");
         } else {
-            Serial.print(right_tof);
+            Serial.print(left_front_tof);
             Serial.println(" mm");
         }
 
-        Serial.print("  Top ToF: ");
-        if (top_tof == 0xFFFF) {
+        Serial.print("  Left-Rear ToF (SD3): ");
+        if (left_rear_tof == 0xFFFF) {
             Serial.println("N/A");
         } else {
-            Serial.print(top_tof);
+            Serial.print(left_rear_tof);
             Serial.println(" mm");
         }
 
@@ -353,6 +359,7 @@ void setup()
     Serial.flush();
     Wire.begin(I2C_SDA_GPIO, I2C_SCL_GPIO);
     Wire.setClock(I2C_FREQ_HZ);
+    delay(100);  // Wait for I2C bus to stabilize
     Serial.println("OK: I2C bus initialized");
     Serial.flush();
 

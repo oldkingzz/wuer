@@ -1,252 +1,297 @@
+/**
+ * ============================================================
+ * ToF传感器测试代码 / ToF Sensor Test Code
+ * ============================================================
+ * 
+ * 这是一个测试代码，用于测试VL53L0X ToF传感器
+ * This is a test code for testing VL53L0X ToF sensors
+ * 
+ * 测试配置 / Test Configuration:
+ * - I2C: SDA=GPIO12, SCL=GPIO13
+ * - TCA9548A通道 / TCA9548A Channels:
+ *   SD0: Top ToF (浮空/未使用)
+ *   SD1: Front ToF (车前)
+ *   SD2: Left-Front ToF (车左侧前)
+ *   SD3: Left-Rear ToF (车左侧后)
+ * 
+ * 功能 / Features:
+ * - 实时打印所有ToF传感器数据
+ * - 无延迟，接收到立即打印
+ * - 显示传感器初始化状态
+ * - 显示距离、状态码、有效性
+ * 
+ * ============================================================
+ */
+
 #include <Wire.h>
+#include <Adafruit_VL53L0X.h>
 
-#define TCA9548A_ADDR 0x70 // Default I2C address of TCA9548A
+// I2C引脚配置
+#define I2C_SDA 12
+#define I2C_SCL 13
 
-void tcaSelect(uint8_t bus) {
-  if (bus > 7) return; // Ensure the bus number is valid
+// TCA9548A配置
+#define TCA9548A_ADDR 0x70
+#define USE_TCA9548A 1
+
+// ToF传感器通道
+#define TOF_TOP_CHANNEL       0  // SD0 (浮空)
+#define TOF_FRONT_CHANNEL     1  // SD1
+#define TOF_LEFT_FRONT_CHANNEL 2  // SD2
+#define TOF_LEFT_REAR_CHANNEL 3  // SD3
+
+// ToF传感器对象
+Adafruit_VL53L0X lox_top = Adafruit_VL53L0X();
+Adafruit_VL53L0X lox_front = Adafruit_VL53L0X();
+Adafruit_VL53L0X lox_left_front = Adafruit_VL53L0X();
+Adafruit_VL53L0X lox_left_rear = Adafruit_VL53L0X();
+
+// 初始化标志
+bool tof_top_ok = false;
+bool tof_front_ok = false;
+bool tof_left_front_ok = false;
+bool tof_left_rear_ok = false;
+
+// TCA9548A通道选择
+void tca_select(uint8_t channel) {
+  if (channel > 7) return;
   Wire.beginTransmission(TCA9548A_ADDR);
-  Wire.write(1 << bus); // Select the specific bus
-  uint8_t error = Wire.endTransmission();
-
-  // Debug: verify the write was successful
-  if (error != 0) {
-    Serial.print("    WARNING: Failed to select channel ");
-    Serial.print(bus);
-    Serial.print(" (error: ");
-    Serial.print(error);
-    Serial.println(")");
-  }
-}
-
-// Read back the current channel selection
-uint8_t tcaReadChannel() {
-  Wire.requestFrom(TCA9548A_ADDR, (uint8_t)1);
-  if (Wire.available()) {
-    return Wire.read();
-  }
-  return 0xFF;  // Error
-}
-
-void scanI2C() {
-  Serial.println("Scanning I2C bus...");
-  int deviceCount = 0;
-
-  for (uint8_t addr = 1; addr < 127; addr++) {
-    Wire.beginTransmission(addr);
-    uint8_t error = Wire.endTransmission();
-
-    if (error == 0) {
-      deviceCount++;
-      Serial.print("  Found device at 0x");
-      if (addr < 16) Serial.print("0");
-      Serial.print(addr, HEX);
-      Serial.print(" - ");
-
-      // Identify common devices
-      if (addr == 0x29) {
-        Serial.println("VL53L0X (ToF Sensor)");
-      } else if (addr == 0x68) {
-        Serial.println("MPU6050 (IMU, AD0=GND)");
-      } else if (addr == 0x69) {
-        Serial.println("MPU6050 (IMU, AD0=VCC)");
-      } else if (addr >= 0x70 && addr <= 0x77) {
-        Serial.println("TCA9548A (I2C Multiplexer)");
-      } else {
-        Serial.println("Unknown device");
-      }
-    }
-  }
-
-  if (deviceCount == 0) {
-    Serial.println("  No devices found");
-  } else {
-    Serial.print("  Total: ");
-    Serial.print(deviceCount);
-    Serial.println(" device(s)");
-  }
-  Serial.println();
+  Wire.write(1 << channel);
+  Wire.endTransmission();
 }
 
 void setup() {
   Serial.begin(115200);
   delay(2000);
-
-  Serial.println("\n\n╔════════════════════════════════════════════════════╗");
-  Serial.println("║     TCA9548A + Sensor Test / TCA9548A传感器测试    ║");
-  Serial.println("╚════════════════════════════════════════════════════╝\n");
-
-  // Initialize I2C
-  Wire.begin(21, 20);  // SDA=GPIO21, SCL=GPIO20
+  
+  Serial.println("\n\n");
+  Serial.println("========================================");
+  Serial.println("  ToF传感器测试 / ToF Sensor Test");
+  Serial.println("========================================");
+  Serial.println();
+  
+  // 初始化I2C
+  Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(100000);  // 100kHz
   delay(100);
-
-  Serial.println("I2C initialized (SDA=GPIO21, SCL=GPIO20, 100kHz)\n");
-
-  // Step 1: Scan main I2C bus
-  Serial.println("════════════════════════════════════════════════════");
-  Serial.println("Step 1: Scanning main I2C bus");
-  Serial.println("════════════════════════════════════════════════════");
-  scanI2C();
-
-  // Step 2: Check TCA9548A
-  Serial.println("════════════════════════════════════════════════════");
-  Serial.println("Step 2: Testing TCA9548A");
-  Serial.println("════════════════════════════════════════════════════");
-
-  Wire.beginTransmission(TCA9548A_ADDR);
-  uint8_t error = Wire.endTransmission();
-
-  if (error == 0) {
-    Serial.print("✓ TCA9548A found at 0x");
-    Serial.println(TCA9548A_ADDR, HEX);
-    Serial.println();
-
-    // Step 3: Scan each channel
-    Serial.println("════════════════════════════════════════════════════");
-    Serial.println("Step 3: Scanning TCA9548A channels (0-7)");
-    Serial.println("════════════════════════════════════════════════════\n");
-
-    for (uint8_t channel = 0; channel < 8; channel++) {
-      Serial.print("Channel ");
-      Serial.print(channel);
-      Serial.print(": ");
-
-      // Select channel
-      tcaSelect(channel);
-      delay(50);  // Increased delay
-
-      // Verify channel selection by reading back
-      uint8_t readBack = tcaReadChannel();
-      uint8_t expected = (1 << channel);
-
-      if (readBack != expected) {
-        Serial.println();
-        Serial.print("    WARNING: Channel select failed! Expected 0x");
-        Serial.print(expected, HEX);
-        Serial.print(", got 0x");
-        Serial.println(readBack, HEX);
-      }
-
-      // Scan for devices on this channel
-      int deviceCount = 0;
-      for (uint8_t addr = 1; addr < 127; addr++) {
-        // Skip TCA9548A address range to avoid confusion
-        if (addr >= 0x70 && addr <= 0x77) continue;
-
-        Wire.beginTransmission(addr);
-        uint8_t error = Wire.endTransmission();
-
-        if (error == 0) {
-          if (deviceCount == 0) {
-            Serial.println();  // New line after "Channel X:"
-          }
-          deviceCount++;
-          Serial.print("  ✓ 0x");
-          if (addr < 16) Serial.print("0");
-          Serial.print(addr, HEX);
-          Serial.print(" - ");
-
-          if (addr == 0x29) {
-            Serial.println("VL53L0X (ToF Sensor)");
-          } else if (addr == 0x68) {
-            Serial.println("MPU6050 (IMU, AD0=GND)");
-          } else if (addr == 0x69) {
-            Serial.println("MPU6050 (IMU, AD0=VCC)");
-          } else {
-            Serial.println("Unknown device");
-          }
-        }
-      }
-
-      if (deviceCount == 0) {
-        Serial.println("(No devices)");
-      }
-
-      Serial.println();
+  
+  Serial.printf("I2C初始化完成 (SDA=GPIO%d, SCL=GPIO%d, 100kHz)\n", I2C_SDA, I2C_SCL);
+  Serial.println();
+  
+  // 扫描I2C设备
+  Serial.println("扫描I2C总线...");
+  int deviceCount = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.printf("  发现设备: 0x%02X\n", addr);
+      deviceCount++;
     }
-
-    // Close all channels
-    Wire.beginTransmission(TCA9548A_ADDR);
-    Wire.write(0);
-    Wire.endTransmission();
-
-  } else {
-    Serial.print("✗ TCA9548A not found at 0x");
-    Serial.println(TCA9548A_ADDR, HEX);
   }
+  Serial.printf("找到 %d 个I2C设备\n\n", deviceCount);
 
-  // Step 4: Test if sensors are connected directly to main bus
-  Serial.println("\n════════════════════════════════════════════════════");
-  Serial.println("Step 4: Checking if sensors are on main bus");
-  Serial.println("════════════════════════════════════════════════════");
-  Serial.println("(Sensors should NOT be on main bus if using TCA9548A)\n");
-
-  // Close all TCA9548A channels first
+  // 检查TCA9548A是否存在
+  Serial.print("检查TCA9548A (地址 0x");
+  Serial.print(TCA9548A_ADDR, HEX);
+  Serial.println(")...");
   Wire.beginTransmission(TCA9548A_ADDR);
-  Wire.write(0x00);
-  Wire.endTransmission();
-  delay(50);
-
-  bool foundOnMainBus = false;
-
-  // Check for VL53L0X
-  Wire.beginTransmission(0x29);
-  if (Wire.endTransmission() == 0) {
-    Serial.println("⚠️  VL53L0X (0x29) found on MAIN bus!");
-    Serial.println("    → Should be connected to TCA9548A channel, not main bus");
-    foundOnMainBus = true;
+  uint8_t tcaError = Wire.endTransmission();
+  if (tcaError == 0) {
+    Serial.println("  ✓ TCA9548A 已找到");
+  } else {
+    Serial.print("  ✗ 未找到TCA9548A, 错误码: ");
+    Serial.println(tcaError);
+  }
+  Serial.println();
+  
+  // 初始化ToF传感器
+  Serial.println("初始化ToF传感器...");
+  Serial.println("----------------------------------------");
+  
+  // SD0: Top ToF (可能浮空)
+  tca_select(TOF_TOP_CHANNEL);
+  delay(10);
+  Serial.print("SD0 (Top ToF, Channel 0)... ");
+  if (lox_top.begin()) {
+    Serial.println("✓ 成功");
+    tof_top_ok = true;
+  } else {
+    Serial.println("✗ 失败 (可能浮空)");
+    tof_top_ok = false;
+  }
+  
+  // SD1: Front ToF
+  tca_select(TOF_FRONT_CHANNEL);
+  delay(10);
+  Serial.print("SD1 (Front ToF, Channel 1)... ");
+  if (lox_front.begin()) {
+    Serial.println("✓ 成功");
+    tof_front_ok = true;
+  } else {
+    Serial.println("✗ 失败");
+    tof_front_ok = false;
+  }
+  
+  // SD2: Left-Front ToF
+  tca_select(TOF_LEFT_FRONT_CHANNEL);
+  delay(10);
+  Serial.print("SD2 (Left-Front ToF, Channel 2)... ");
+  if (lox_left_front.begin()) {
+    Serial.println("✓ 成功");
+    tof_left_front_ok = true;
+  } else {
+    Serial.println("✗ 失败");
+    tof_left_front_ok = false;
+  }
+  
+  // SD3: Left-Rear ToF
+  tca_select(TOF_LEFT_REAR_CHANNEL);
+  delay(10);
+  Serial.print("SD3 (Left-Rear ToF, Channel 3)... ");
+  if (lox_left_rear.begin()) {
+    Serial.println("✓ 成功");
+    tof_left_rear_ok = true;
+  } else {
+    Serial.println("✗ 失败");
+    tof_left_rear_ok = false;
   }
 
-  // Check for MPU6050
-  Wire.beginTransmission(0x68);
-  if (Wire.endTransmission() == 0) {
-    Serial.println("⚠️  MPU6050 (0x68) found on MAIN bus!");
-    Serial.println("    → Should be connected to TCA9548A channel, not main bus");
-    foundOnMainBus = true;
+  Serial.println("----------------------------------------");
+  Serial.println();
+
+  // 总结初始化结果
+  int success_count = tof_top_ok + tof_front_ok + tof_left_front_ok + tof_left_rear_ok;
+  Serial.printf("初始化完成: %d/4 个传感器成功\n", success_count);
+  Serial.println();
+
+  if (success_count == 0) {
+    Serial.println("⚠️  警告: 没有传感器初始化成功!");
+    Serial.println("请检查:");
+    Serial.println("  1. TCA9548A接线 (SDA=GPIO12, SCL=GPIO13)");
+    Serial.println("  2. VL53L0X传感器接线");
+    Serial.println("  3. 电源供电是否正常");
+    Serial.println();
   }
 
-  Wire.beginTransmission(0x69);
-  if (Wire.endTransmission() == 0) {
-    Serial.println("⚠️  MPU6050 (0x69) found on MAIN bus!");
-    Serial.println("    → Should be connected to TCA9548A channel, not main bus");
-    foundOnMainBus = true;
-  }
-
-  if (!foundOnMainBus) {
-    Serial.println("✓ No sensors on main bus (correct)");
-  }
-
-  Serial.println("\n════════════════════════════════════════════════════");
-  Serial.println("Test complete! / 测试完成！");
-  Serial.println("════════════════════════════════════════════════════\n");
-
-  Serial.println("【诊断建议 / Diagnostic Suggestions】\n");
-  Serial.println("如果传感器在主总线上被发现:");
-  Serial.println("  → 传感器连接到了ESP32的GPIO 21/20，而不是TCA9548A的通道");
-  Serial.println("  → 需要连接到TCA9548A的SD0/SC0 (通道0) 或 SD3/SC3 (通道3)\n");
-
-  Serial.println("如果传感器在通道上找不到:");
-  Serial.println("  1. 检查传感器的SDA/SCL是否连接到TCA9548A的SDx/SCx引脚");
-  Serial.println("  2. 检查传感器的VCC是否有3.3V");
-  Serial.println("  3. 检查传感器的GND是否连接");
-  Serial.println("  4. 尝试把传感器直接连接到ESP32 GPIO 21/20测试是否工作\n");
-
-  Serial.println("TCA9548A引脚说明:");
-  Serial.println("  主总线: SDA → GPIO 21, SCL → GPIO 20");
-  Serial.println("  通道0: SD0, SC0");
-  Serial.println("  通道1: SD1, SC1");
-  Serial.println("  通道2: SD2, SC2");
-  Serial.println("  通道3: SD3, SC3");
-  Serial.println("  通道4-7: SD4-7, SC4-7\n");
-
-  Serial.println("Next steps / 下一步:");
-  Serial.println("1. Connect VL53L0X to TCA9548A Channel 0 (SD0/SC0)");
-  Serial.println("2. Connect MPU6050 to TCA9548A Channel 3 (SD3/SC3)");
-  Serial.println("3. Press RESET to test again");
+  Serial.println("开始实时读取数据...");
+  Serial.println("========================================");
   Serial.println();
 }
 
 void loop() {
-  // Wait for reset
-  delay(10000);
+  static unsigned long last_print = 0;
+  static unsigned long read_count = 0;
+  unsigned long now = millis();
+
+  // 每200ms打印一次（实时显示，不会太快刷屏）
+  if (now - last_print < 200) {
+    return;
+  }
+  last_print = now;
+  read_count++;
+
+  VL53L0X_RangingMeasurementData_t measure;
+
+  Serial.println("┌──────────────────────────────────────────────────────────────┐");
+  Serial.printf("│ 读取 #%lu | 时间: %lu ms\n", read_count, now);
+  Serial.println("├──────────────────────────────────────────────────────────────┤");
+
+  // 读取SD0: Top ToF
+  if (tof_top_ok) {
+    tca_select(TOF_TOP_CHANNEL);
+    lox_top.rangingTest(&measure, false);
+
+    Serial.print("│ SD0 (Top):        ");
+    if (measure.RangeStatus != 4 && measure.RangeMilliMeter < 8190) {
+      Serial.printf("%4d mm  [Status: %d] ", measure.RangeMilliMeter, measure.RangeStatus);
+      // 距离指示条
+      int bars = map(measure.RangeMilliMeter, 0, 2000, 20, 0);
+      bars = constrain(bars, 0, 20);
+      for (int i = 0; i < bars; i++) Serial.print("█");
+      Serial.println();
+    } else if (measure.RangeMilliMeter >= 8190) {
+      Serial.printf("ERROR (65535)  [Status: %d] ✗\n", measure.RangeStatus);
+    } else {
+      Serial.printf("OUT OF RANGE  [Status: %d] ✗\n", measure.RangeStatus);
+    }
+  } else {
+    Serial.println("│ SD0 (Top):        ✗ NOT INITIALIZED");
+  }
+
+  // 读取SD1: Front ToF
+  if (tof_front_ok) {
+    tca_select(TOF_FRONT_CHANNEL);
+    lox_front.rangingTest(&measure, false);
+
+    Serial.print("│ SD1 (Front):      ");
+    if (measure.RangeStatus != 4 && measure.RangeMilliMeter < 8190) {
+      Serial.printf("%4d mm  [Status: %d] ", measure.RangeMilliMeter, measure.RangeStatus);
+      int bars = map(measure.RangeMilliMeter, 0, 2000, 20, 0);
+      bars = constrain(bars, 0, 20);
+      for (int i = 0; i < bars; i++) Serial.print("█");
+      Serial.println();
+    } else if (measure.RangeMilliMeter >= 8190) {
+      Serial.printf("ERROR (65535)  [Status: %d] ✗\n", measure.RangeStatus);
+    } else {
+      Serial.printf("OUT OF RANGE  [Status: %d] ✗\n", measure.RangeStatus);
+    }
+  } else {
+    Serial.println("│ SD1 (Front):      ✗ NOT INITIALIZED");
+  }
+
+  // 读取SD2: Left-Front ToF
+  if (tof_left_front_ok) {
+    tca_select(TOF_LEFT_FRONT_CHANNEL);
+    lox_left_front.rangingTest(&measure, false);
+
+    Serial.print("│ SD2 (Left-Front): ");
+    if (measure.RangeStatus != 4 && measure.RangeMilliMeter < 8190) {
+      Serial.printf("%4d mm  [Status: %d] ", measure.RangeMilliMeter, measure.RangeStatus);
+      int bars = map(measure.RangeMilliMeter, 0, 2000, 20, 0);
+      bars = constrain(bars, 0, 20);
+      for (int i = 0; i < bars; i++) Serial.print("█");
+      Serial.println();
+    } else if (measure.RangeMilliMeter >= 8190) {
+      Serial.printf("ERROR (65535)  [Status: %d] ✗\n", measure.RangeStatus);
+    } else {
+      Serial.printf("OUT OF RANGE  [Status: %d] ✗\n", measure.RangeStatus);
+    }
+  } else {
+    Serial.println("│ SD2 (Left-Front): ✗ NOT INITIALIZED");
+  }
+
+  // 读取SD3: Left-Rear ToF
+  if (tof_left_rear_ok) {
+    tca_select(TOF_LEFT_REAR_CHANNEL);
+    lox_left_rear.rangingTest(&measure, false);
+
+    Serial.print("│ SD3 (Left-Rear):  ");
+    if (measure.RangeStatus != 4 && measure.RangeMilliMeter < 8190) {
+      Serial.printf("%4d mm  [Status: %d] ", measure.RangeMilliMeter, measure.RangeStatus);
+      int bars = map(measure.RangeMilliMeter, 0, 2000, 20, 0);
+      bars = constrain(bars, 0, 20);
+      for (int i = 0; i < bars; i++) Serial.print("█");
+      Serial.println();
+    } else if (measure.RangeMilliMeter >= 8190) {
+      Serial.printf("ERROR (65535)  [Status: %d] ✗\n", measure.RangeStatus);
+    } else {
+      Serial.printf("OUT OF RANGE  [Status: %d] ✗\n", measure.RangeStatus);
+    }
+  } else {
+    Serial.println("│ SD3 (Left-Rear):  ✗ NOT INITIALIZED");
+  }
+
+  Serial.println("└──────────────────────────────────────────────────────────────┘");
+  Serial.println();
+
+  // 提示信息（每10次读取显示一次）
+  if (read_count % 10 == 0) {
+    Serial.println("💡 提示:");
+    Serial.println("   - 距离条: █████ 表示距离（越长越近）");
+    Serial.println("   - Status 0 = 正常, 4 = 超出范围");
+    Serial.println("   - ERROR (65535) = 传感器读取失败");
+    Serial.println("   - 正常范围: 30mm - 2000mm");
+    Serial.println();
+  }
 }
+

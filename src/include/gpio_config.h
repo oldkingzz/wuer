@@ -90,14 +90,18 @@
 /**
  * I2C SDA引脚 - 数据线
  * I2C SDA Pin - Data Line
+ *
+ * 硬件实际接线: SDA = GPIO12
  */
-#define I2C_SDA_GPIO            GPIO_NUM_21
+#define I2C_SDA_GPIO            GPIO_NUM_12
 
 /**
  * I2C SCL引脚 - 时钟线
  * I2C SCL Pin - Clock Line
+ *
+ * 硬件实际接线: SCL = GPIO13
  */
-#define I2C_SCL_GPIO            GPIO_NUM_20
+#define I2C_SCL_GPIO            GPIO_NUM_13
 
 /**
  * I2C总线频率
@@ -118,16 +122,28 @@
 /**
  * VL53L0X ToF传感器通道分配 (通过TCA9548A)
  * VL53L0X ToF Sensor Channel Assignment (via TCA9548A)
+ *
+ * 新的通道分配 / New channel assignment:
+ * SD0: 顶部ToF (保留) / Top ToF (reserved)
+ * SD1: 车前ToF / Front ToF
+ * SD2: 车左侧前面ToF / Left-Front ToF
+ * SD3: 车左侧后面ToF / Left-Rear ToF
+ * SD4: MPU6050 IMU
  */
-#define TOF_LEFT_CHANNEL        1  // 左侧ToF传感器 / Left side ToF (实际连接在通道1)
-#define TOF_RIGHT_CHANNEL       2  // 右侧ToF传感器 / Right side ToF
-#define TOF_TOP_CHANNEL         0  // 顶部ToF传感器 / Top ToF
+#define TOF_TOP_CHANNEL         0  // 顶部ToF传感器 / Top ToF (SD0)
+#define TOF_FRONT_CHANNEL       1  // 车前ToF传感器 / Front ToF (SD1)
+#define TOF_LEFT_FRONT_CHANNEL  2  // 车左侧前面ToF / Left-Front ToF (SD2)
+#define TOF_LEFT_REAR_CHANNEL   3  // 车左侧后面ToF / Left-Rear ToF (SD3)
+
+// 为了兼容旧代码，保留旧的宏定义
+#define TOF_LEFT_CHANNEL        TOF_LEFT_FRONT_CHANNEL  // 兼容旧代码
+#define TOF_RIGHT_CHANNEL       TOF_FRONT_CHANNEL       // 兼容旧代码
 
 /**
  * MPU6050 IMU传感器通道 (通过TCA9548A)
  * MPU6050 IMU Sensor Channel (via TCA9548A)
  */
-#define IMU_CHANNEL             3  // IMU传感器 / IMU sensor
+#define IMU_CHANNEL             4  // IMU传感器 / IMU sensor (SD4)
 
 
 /* ========== Vive定位传感器引脚 / Vive Positioning Sensor Pins ========== */

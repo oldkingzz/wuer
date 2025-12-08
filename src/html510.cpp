@@ -411,16 +411,24 @@ static esp_err_t stop_nav_handler(httpd_req_t *req)
  */
 static esp_err_t get_sensor_data_handler(httpd_req_t *req)
 {
-    char json_response[768];
+    char json_response[1024];
 
-    // Get ToF data
-    uint16_t tof_front = tof_get_top_distance();    // Top ToF = Front
-    uint16_t tof_left = tof_get_left_distance();
-    uint16_t tof_right = tof_get_right_distance();
+    // Get ToF data (新的传感器配置)
+    // SD0: Top (浮空，不使用)
+    // SD1: Front
+    // SD2: Left-Front
+    // SD3: Left-Rear
+    uint16_t tof_front = tof_get_front_distance();           // SD1
+    uint16_t tof_left_front = tof_get_left_front_distance(); // SD2
+    uint16_t tof_left_rear = tof_get_left_rear_distance();   // SD3
 
-    // Get IMU data
-    float gyro_z = imu_get_gyro_z();
-    float temp = imu_get_temperature();
+    // Get IMU data (SD4)
+    imu_data_t imu_data;
+    esp_err_t imu_ret = imu_read(&imu_data);
+    float gyro_z = (imu_ret == ESP_OK) ? imu_data.gyro.z : 0.0f;
+    float accel_x = (imu_ret == ESP_OK) ? imu_data.accel.x : 0.0f;
+    float accel_y = (imu_ret == ESP_OK) ? imu_data.accel.y : 0.0f;
+    float temp = (imu_ret == ESP_OK) ? imu_data.temperature : 0.0f;
 
     // Get encoder data
     int32_t encoder_left = encoder2_get_count();
@@ -456,9 +464,11 @@ static esp_err_t get_sensor_data_handler(httpd_req_t *req)
     snprintf(json_response, sizeof(json_response),
         "{"
         "\"tof_front\":%u,"
-        "\"tof_left\":%u,"
-        "\"tof_right\":%u,"
+        "\"tof_left_front\":%u,"
+        "\"tof_left_rear\":%u,"
         "\"imu_gyro_z\":%.2f,"
+        "\"imu_accel_x\":%.2f,"
+        "\"imu_accel_y\":%.2f,"
         "\"imu_temp\":%.1f,"
         "\"encoder_left\":%ld,"
         "\"encoder_right\":%ld,"
@@ -471,8 +481,8 @@ static esp_err_t get_sensor_data_handler(httpd_req_t *req)
         "\"wall_follow_state\":\"%s\","
         "\"wall_follow_running\":%s"
         "}",
-        tof_front, tof_left, tof_right,
-        gyro_z, temp,
+        tof_front, tof_left_front, tof_left_rear,
+        gyro_z, accel_x, accel_y, temp,
         encoder_left, encoder_right,
         vive1_x, vive1_y, vive1_valid ? "true" : "false",
         vive2_x, vive2_y, vive2_valid ? "true" : "false",

@@ -13,22 +13,31 @@
 static const char *TAG = "TOF_SENSOR";
 
 // Sensor objects
-static Adafruit_VL53L0X lox_left;
-static Adafruit_VL53L0X lox_right;
-static Adafruit_VL53L0X lox_top;
+static Adafruit_VL53L0X lox_top;         // SD0
+static Adafruit_VL53L0X lox_front;       // SD1
+static Adafruit_VL53L0X lox_left_front;  // SD2
+static Adafruit_VL53L0X lox_left_rear;   // SD3
 
 // Initialization status
-static bool tof_left_initialized = false;
-static bool tof_right_initialized = false;
 static bool tof_top_initialized = false;
+static bool tof_front_initialized = false;
+static bool tof_left_front_initialized = false;
+static bool tof_left_rear_initialized = false;
 
 // Latest measurements
-static tof_data_t g_left_data = {0, false, 0};
-static tof_data_t g_right_data = {0, false, 0};
 static tof_data_t g_top_data = {0, false, 0};
+static tof_data_t g_front_data = {0, false, 0};
+static tof_data_t g_left_front_data = {0, false, 0};
+static tof_data_t g_left_rear_data = {0, false, 0};
 
 // Mutex for thread safety
 static SemaphoreHandle_t tof_mutex = NULL;
+
+// Maximum valid distance threshold (configurable)
+static uint16_t g_max_distance_mm = TOF_MAX_DISTANCE_MM;
+
+// Channel switch delay (configurable)
+static uint8_t g_channel_delay_ms = TOF_CHANNEL_SWITCH_DELAY_MS;
 
 /**
  * @brief Select TCA9548A channel
@@ -62,6 +71,23 @@ esp_err_t tof_init(void)
     Serial.println("Initializing ToF sensors via TCA9548A...");
     Serial.flush();
 
+    // Scan I2C bus first to help stabilize communication
+    Serial.println("Scanning I2C bus...");
+    Serial.flush();
+    int deviceCount = 0;
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            Serial.print("  Found device: 0x");
+            if (addr < 16) Serial.print("0");
+            Serial.println(addr, HEX);
+            deviceCount++;
+        }
+    }
+    Serial.print("Total devices found: ");
+    Serial.println(deviceCount);
+    Serial.flush();
+
     // I2C is already initialized in Wire.begin() from main
     // Just verify we can communicate with TCA9548A
     Serial.print("Checking TCA9548A at address 0x");
@@ -90,57 +116,84 @@ esp_err_t tof_init(void)
     Serial.flush();
 #endif
 
-    // Initialize left ToF sensor
+    // Initialize Top ToF sensor (SD0)
 #if USE_TCA9548A
-    tca_select(TOF_LEFT_CHANNEL);
-    delay(10);
-    Serial.print("Init ToF Left (Channel 0)... ");
-#else
-    Serial.print("Init ToF Left (Direct, 0x29)... ");
-#endif
-    if (!lox_left.begin()) {
-        ESP_LOGE(TAG, "Failed to init left ToF");
-        Serial.println("Failed!");
-        tof_left_initialized = false;
-    } else {
-        ESP_LOGI(TAG, "Left ToF initialized");
-        Serial.println("Success!");
-        tof_left_initialized = true;
-    }
-
-#if USE_TCA9548A
-    // Initialize right ToF sensor (channel 1) - 仅在使用TCA9548A时
-    tca_select(TOF_RIGHT_CHANNEL);
-    delay(10);
-    Serial.print("Init ToF Right (Channel 1)... ");
-    if (!lox_right.begin()) {
-        ESP_LOGE(TAG, "Failed to init right ToF");
-        Serial.println("Failed!");
-        tof_right_initialized = false;
-    } else {
-        ESP_LOGI(TAG, "Right ToF initialized");
-        Serial.println("Success!");
-        tof_right_initialized = true;
-    }
-
-    // Initialize top ToF sensor (channel 2) - 仅在使用TCA9548A时
     tca_select(TOF_TOP_CHANNEL);
-    delay(10);
-    Serial.print("Init ToF Top (Channel 2)... ");
+    delay(50);  // Increased delay for channel switching
+    Serial.print("Init ToF Top (SD0, Channel 0)... ");
+    Serial.flush();
+#else
+    Serial.print("Init ToF Top (Direct, 0x29)... ");
+#endif
     if (!lox_top.begin()) {
         ESP_LOGE(TAG, "Failed to init top ToF");
         Serial.println("Failed!");
+        Serial.flush();
         tof_top_initialized = false;
     } else {
         ESP_LOGI(TAG, "Top ToF initialized");
         Serial.println("Success!");
+        Serial.flush();
         tof_top_initialized = true;
+    }
+
+#if USE_TCA9548A
+    // Initialize Front ToF sensor (SD1)
+    tca_select(TOF_FRONT_CHANNEL);
+    delay(50);  // Increased delay for channel switching
+    Serial.print("Init ToF Front (SD1, Channel 1)... ");
+    Serial.flush();
+    if (!lox_front.begin()) {
+        ESP_LOGE(TAG, "Failed to init front ToF");
+        Serial.println("Failed!");
+        Serial.flush();
+        tof_front_initialized = false;
+    } else {
+        ESP_LOGI(TAG, "Front ToF initialized");
+        Serial.println("Success!");
+        Serial.flush();
+        tof_front_initialized = true;
+    }
+
+    // Initialize Left-Front ToF sensor (SD2)
+    tca_select(TOF_LEFT_FRONT_CHANNEL);
+    delay(50);  // Increased delay for channel switching
+    Serial.print("Init ToF Left-Front (SD2, Channel 2)... ");
+    Serial.flush();
+    if (!lox_left_front.begin()) {
+        ESP_LOGE(TAG, "Failed to init left-front ToF");
+        Serial.println("Failed!");
+        Serial.flush();
+        tof_left_front_initialized = false;
+    } else {
+        ESP_LOGI(TAG, "Left-Front ToF initialized");
+        Serial.println("Success!");
+        Serial.flush();
+        tof_left_front_initialized = true;
+    }
+
+    // Initialize Left-Rear ToF sensor (SD3)
+    tca_select(TOF_LEFT_REAR_CHANNEL);
+    delay(50);  // Increased delay for channel switching
+    Serial.print("Init ToF Left-Rear (SD3, Channel 3)... ");
+    Serial.flush();
+    if (!lox_left_rear.begin()) {
+        ESP_LOGE(TAG, "Failed to init left-rear ToF");
+        Serial.println("Failed!");
+        Serial.flush();
+        tof_left_rear_initialized = false;
+    } else {
+        ESP_LOGI(TAG, "Left-Rear ToF initialized");
+        Serial.println("Success!");
+        Serial.flush();
+        tof_left_rear_initialized = true;
     }
 #else
     // 直连模式下，只能使用一个VL53L0X（地址0x29）
     Serial.println("Note: Only one VL53L0X supported in direct mode");
-    tof_right_initialized = false;
-    tof_top_initialized = false;
+    tof_front_initialized = false;
+    tof_left_front_initialized = false;
+    tof_left_rear_initialized = false;
 #endif
 
     ESP_LOGI(TAG, "ToF sensors initialization complete");
@@ -164,20 +217,25 @@ esp_err_t tof_read(tof_position_t position, tof_data_t *data)
 
     // Select sensor and channel
     switch (position) {
-        case TOF_LEFT:
-            sensor = &lox_left;
-            channel = TOF_LEFT_CHANNEL;
-            initialized = tof_left_initialized;
-            break;
-        case TOF_RIGHT:
-            sensor = &lox_right;
-            channel = TOF_RIGHT_CHANNEL;
-            initialized = tof_right_initialized;
-            break;
         case TOF_TOP:
             sensor = &lox_top;
             channel = TOF_TOP_CHANNEL;
             initialized = tof_top_initialized;
+            break;
+        case TOF_FRONT:
+            sensor = &lox_front;
+            channel = TOF_FRONT_CHANNEL;
+            initialized = tof_front_initialized;
+            break;
+        case TOF_LEFT_FRONT:
+            sensor = &lox_left_front;
+            channel = TOF_LEFT_FRONT_CHANNEL;
+            initialized = tof_left_front_initialized;
+            break;
+        case TOF_LEFT_REAR:
+            sensor = &lox_left_rear;
+            channel = TOF_LEFT_REAR_CHANNEL;
+            initialized = tof_left_rear_initialized;
             break;
         default:
             xSemaphoreGive(tof_mutex);
@@ -196,14 +254,28 @@ esp_err_t tof_read(tof_position_t position, tof_data_t *data)
     // Select channel and read
 #if USE_TCA9548A
     tca_select(channel);
-    delay(1);
+    if (g_channel_delay_ms > 0) {
+        delay(g_channel_delay_ms);
+    }
 #endif
     sensor->rangingTest(&measure, false);
 
     // Store data
     data->distance_mm = measure.RangeMilliMeter;
     data->range_status = measure.RangeStatus;
-    data->valid = (measure.RangeStatus != 4);  // 4 = out of range
+
+    // Validate measurement:
+    // 1. RangeStatus != 4 (not out of range)
+    // 2. Distance < 65535 (not error value)
+    // 3. Distance <= max threshold
+    data->valid = (measure.RangeStatus != 4) &&
+                  (measure.RangeMilliMeter < 65535) &&
+                  (measure.RangeMilliMeter <= g_max_distance_mm);
+
+    // If invalid, set distance to max threshold for safety
+    if (!data->valid) {
+        data->distance_mm = g_max_distance_mm;
+    }
 
     xSemaphoreGive(tof_mutex);
     return ESP_OK;
@@ -212,42 +284,32 @@ esp_err_t tof_read(tof_position_t position, tof_data_t *data)
 /**
  * @brief Read all ToF sensors at once
  */
-esp_err_t tof_read_all(tof_data_t *left_data, tof_data_t *right_data, tof_data_t *top_data)
+esp_err_t tof_read_all(tof_data_t *top_data, tof_data_t *front_data,
+                       tof_data_t *left_front_data, tof_data_t *left_rear_data)
 {
     esp_err_t ret;
-
-    ret = tof_read(TOF_LEFT, left_data);
-    if (ret == ESP_OK) {
-        g_left_data = *left_data;
-    }
-
-    ret = tof_read(TOF_RIGHT, right_data);
-    if (ret == ESP_OK) {
-        g_right_data = *right_data;
-    }
 
     ret = tof_read(TOF_TOP, top_data);
     if (ret == ESP_OK) {
         g_top_data = *top_data;
     }
 
+    ret = tof_read(TOF_FRONT, front_data);
+    if (ret == ESP_OK) {
+        g_front_data = *front_data;
+    }
+
+    ret = tof_read(TOF_LEFT_FRONT, left_front_data);
+    if (ret == ESP_OK) {
+        g_left_front_data = *left_front_data;
+    }
+
+    ret = tof_read(TOF_LEFT_REAR, left_rear_data);
+    if (ret == ESP_OK) {
+        g_left_rear_data = *left_rear_data;
+    }
+
     return ESP_OK;
-}
-
-/**
- * @brief Get left side ToF distance
- */
-uint16_t tof_get_left_distance(void)
-{
-    return g_left_data.valid ? g_left_data.distance_mm : 0xFFFF;
-}
-
-/**
- * @brief Get right side ToF distance
- */
-uint16_t tof_get_right_distance(void)
-{
-    return g_right_data.valid ? g_right_data.distance_mm : 0xFFFF;
 }
 
 /**
@@ -256,6 +318,95 @@ uint16_t tof_get_right_distance(void)
 uint16_t tof_get_top_distance(void)
 {
     return g_top_data.valid ? g_top_data.distance_mm : 0xFFFF;
+}
+
+/**
+ * @brief Get front ToF distance
+ */
+uint16_t tof_get_front_distance(void)
+{
+    return g_front_data.valid ? g_front_data.distance_mm : 0xFFFF;
+}
+
+/**
+ * @brief Get left-front ToF distance
+ */
+uint16_t tof_get_left_front_distance(void)
+{
+    return g_left_front_data.valid ? g_left_front_data.distance_mm : 0xFFFF;
+}
+
+/**
+ * @brief Get left-rear ToF distance
+ */
+uint16_t tof_get_left_rear_distance(void)
+{
+    return g_left_rear_data.valid ? g_left_rear_data.distance_mm : 0xFFFF;
+}
+
+/**
+ * @brief Set maximum valid distance threshold
+ */
+void tof_set_max_distance(uint16_t max_distance_mm)
+{
+    g_max_distance_mm = max_distance_mm;
+    ESP_LOGI(TAG, "ToF max distance set to %u mm", max_distance_mm);
+}
+
+/**
+ * @brief Set channel switch delay
+ */
+void tof_set_channel_delay(uint8_t delay_ms)
+{
+    if (delay_ms > 10) {
+        delay_ms = 10;  // Cap at 10ms
+    }
+    g_channel_delay_ms = delay_ms;
+    ESP_LOGI(TAG, "ToF channel switch delay set to %u ms", delay_ms);
+}
+
+/**
+ * @brief Backward-compatible helper: read distance by legacy index
+ *
+ * This function is provided for older example sketches (e.g.
+ * examples/wall_following.ino) that used a simple index-based API:
+ *   index 0 -> front sensor
+ *   index 1 -> left-side sensor
+ *   index 2 -> right-side sensor
+ *
+ * It maps those indices onto the new multi-sensor interface and applies the
+ * same validation/filtering rules as tof_read(). New code should prefer the
+ * typed APIs (tof_read() / tof_get_*_distance()).
+ */
+uint16_t tof_read_distance(uint8_t index)
+{
+    tof_position_t position;
+
+    switch (index) {
+        case 0:
+            // Front ToF
+            position = TOF_FRONT;
+            break;
+        case 1:
+            // Left-side ToF
+            position = TOF_LEFT_FRONT;
+            break;
+        case 2:
+            // "Right" side ToF（当前映射到另一侧向传感器）
+            position = TOF_LEFT_REAR;
+            break;
+        default:
+            // Unsupported index
+            return 0;
+    }
+
+    tof_data_t data;
+    if (tof_read(position, &data) != ESP_OK || !data.valid) {
+        // 与旧代码兼容：无效读数返回0
+        return 0;
+    }
+
+    return data.distance_mm;
 }
 
 
