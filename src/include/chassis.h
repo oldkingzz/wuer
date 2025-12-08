@@ -20,7 +20,7 @@
  * 新轮子: 109mm (原来65mm)
  * New wheel: 109mm (was 65mm)
  */
-#define CHASSIS_WHEEL_DIAMETER_MM   109.0f
+#define CHASSIS_WHEEL_DIAMETER_MM   105.0f
 
 /**
  * 轮子直径 (m)
