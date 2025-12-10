@@ -75,8 +75,10 @@ static void IRAM_ATTR encoder_isr_handler(void* arg)
 
     g_last_state = current_state;
 
-    // 每4个计数增加一个脉冲 / Increment pulse every 4 counts
-    g_pulse_count = g_total_count / 4;
+    // g_total_count 已经是 4x 解码后的有效计数
+    // Datasheet: 64 counts/rev when counting both edges of both channels
+    // 因此这里不再额外除以4，直接使用 g_total_count 作为脉冲计数
+    g_pulse_count = g_total_count;
 }
 
 /**
@@ -309,8 +311,8 @@ static void IRAM_ATTR encoder2_isr_handler(void* arg)
 
     g_last_state2 = current_state;
 
-    // 每4个计数增加一个脉冲 / Increment pulse every 4 counts
-    g_pulse_count2 = g_total_count2 / 4;
+    // 同上，直接使用 4x 解码后的计数
+    g_pulse_count2 = g_total_count2;
 }
 
 /**

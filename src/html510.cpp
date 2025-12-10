@@ -61,6 +61,9 @@ static const char *TAG = "WEB_SERVER";
 static float g_chassis_linear_velocity = 0.0f;   // m/s
 static float g_chassis_angular_velocity = 0.0f;  // rad/s
 
+// Manual control enable flag (disable when in autonomous mode)
+static bool g_manual_control_enabled = true;
+
 // HTTP server handle
 static httpd_handle_t server = NULL;
 
@@ -309,6 +312,9 @@ static esp_err_t stop_chassis_handler(httpd_req_t *req)
     g_chassis_linear_velocity = 0.0f;
     g_chassis_angular_velocity = 0.0f;
 
+    // Re-enable manual control (in case it was disabled)
+    g_manual_control_enabled = true;
+
     ESP_LOGI(TAG, "Emergency stop triggered!");
 
     httpd_resp_set_type(req, "text/plain");
@@ -413,14 +419,14 @@ static esp_err_t get_sensor_data_handler(httpd_req_t *req)
 {
     char json_response[1024];
 
-    // Get ToF data (新的传感器配置)
+    // Get ToF data (新的传感器配置) - 使用异步缓存接口（非阻塞，带mutex保护）
     // SD0: Top (浮空，不使用)
     // SD1: Front
     // SD2: Left-Front
     // SD3: Left-Rear
-    uint16_t tof_front = tof_get_front_distance();           // SD1
-    uint16_t tof_left_front = tof_get_left_front_distance(); // SD2
-    uint16_t tof_left_rear = tof_get_left_rear_distance();   // SD3
+    uint16_t tof_front = tof_get_cached_front_distance();           // SD1 (异步缓存)
+    uint16_t tof_left_front = tof_get_cached_left_front_distance(); // SD2 (异步缓存)
+    uint16_t tof_left_rear = tof_get_left_rear_distance();          // SD3 (未使用异步)
 
     // Get IMU data (SD4)
     imu_data_t imu_data;
@@ -450,11 +456,8 @@ static esp_err_t get_sensor_data_handler(httpd_req_t *req)
     if (wf_available) {
         switch (wf_status.state) {
             case WF_STATE_IDLE:         wf_state_str = "IDLE"; break;
-            case WF_STATE_FIND_WALL:    wf_state_str = "FIND_WALL"; break;
+            case WF_STATE_INIT_POS:     wf_state_str = "INIT_POS"; break;
             case WF_STATE_FOLLOW_WALL:  wf_state_str = "FOLLOW_WALL"; break;
-            case WF_STATE_TURN_AWAY:    wf_state_str = "TURN_AWAY"; break;
-            case WF_STATE_TURN_TOWARD:  wf_state_str = "TURN_TOWARD"; break;
-            case WF_STATE_CLEARANCE:    wf_state_str = "CLEARANCE"; break;
             case WF_STATE_STOPPED:      wf_state_str = "STOPPED"; break;
             default:                    wf_state_str = "UNKNOWN"; break;
         }
@@ -501,6 +504,12 @@ static esp_err_t get_sensor_data_handler(httpd_req_t *req)
 static esp_err_t start_wall_follow_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Starting wall following");
+
+    // Disable manual control
+    g_manual_control_enabled = false;
+    g_chassis_linear_velocity = 0.0f;
+    g_chassis_angular_velocity = 0.0f;
+
     esp_err_t ret = wall_following_start();
 
     httpd_resp_set_type(req, "text/plain");
@@ -519,6 +528,13 @@ static esp_err_t stop_wall_follow_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Stopping wall following");
     esp_err_t ret = wall_following_stop();
+
+    // Re-enable manual control
+    g_manual_control_enabled = true;
+
+    // Clear chassis velocity to prevent interference
+    g_chassis_linear_velocity = 0.0f;
+    g_chassis_angular_velocity = 0.0f;
 
     httpd_resp_set_type(req, "text/plain");
     if (ret == ESP_OK) {
@@ -545,11 +561,8 @@ static esp_err_t get_wall_follow_status_handler(httpd_req_t *req)
         const char* state_str;
         switch (status.state) {
             case WF_STATE_IDLE:         state_str = "IDLE"; break;
-            case WF_STATE_FIND_WALL:    state_str = "FIND_WALL"; break;
+            case WF_STATE_INIT_POS:     state_str = "INIT_POS"; break;
             case WF_STATE_FOLLOW_WALL:  state_str = "FOLLOW_WALL"; break;
-            case WF_STATE_TURN_AWAY:    state_str = "TURN_AWAY"; break;
-            case WF_STATE_TURN_TOWARD:  state_str = "TURN_TOWARD"; break;
-            case WF_STATE_CLEARANCE:    state_str = "CLEARANCE"; break;
             case WF_STATE_STOPPED:      state_str = "STOPPED"; break;
             default:                    state_str = "UNKNOWN"; break;
         }
@@ -740,4 +753,12 @@ float web_server_get_linear_velocity(void)
 float web_server_get_angular_velocity(void)
 {
     return g_chassis_angular_velocity;
+}
+
+/**
+ * @brief Check if manual control is enabled
+ */
+bool web_server_is_manual_control_enabled(void)
+{
+    return g_manual_control_enabled;
 }

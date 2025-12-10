@@ -49,5 +49,17 @@ float web_server_get_linear_velocity(void);
  */
 float web_server_get_angular_velocity(void);
 
+/**
+ * @brief 检查手动控制是否启用
+ * Check if manual control is enabled
+ *
+ * 当处于自动模式（寻墙、导航）时，手动控制被禁用
+ * Manual control is disabled when in autonomous mode (wall following, navigation)
+ *
+ * @return true 手动控制启用 / Manual control enabled
+ *         false 手动控制禁用 / Manual control disabled
+ */
+bool web_server_is_manual_control_enabled(void);
+
 #endif // USER_INPUT_H
 

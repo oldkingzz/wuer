@@ -186,19 +186,20 @@
 
 /**
  * 编码器每转脉冲数 (CPR - Counts Per Revolution)
- * Encoder Counts Per Revolution (before quadrature decoding)
- * 新电机: 64 CPR
- * New motor: 64 CPR
+ * Encoder counts per motor-shaft revolution
+ *
+ * 数据手册已说明: "64 counts per revolution of the motor shaft
+ * when counting both edges of both channels"，也就是已经是4倍频后的计数。
+ * Datasheet: 64 counts/rev when counting both edges of both channels
+ * (this already includes 4x quadrature decoding).
  */
-#define ENCODER_BASE_CPR        64
+#define ENCODER_BASE_CPR        64    // 64 counts / motor rev at 4x
 
 /**
- * 正交编码器模式下每转计数 (4倍频)
- * Counts per revolution in quadrature mode (4x decoding)
- * 计算: 64 CPR × 4 = 256
- * Calculation: 64 CPR × 4 = 256
+ * 为了兼容旧命名，这里仍然保留 ENCODER_CPR_4X，但数值与 ENCODER_BASE_CPR 相同。
+ * For backward compatibility, ENCODER_CPR_4X is kept but equals ENCODER_BASE_CPR.
  */
-#define ENCODER_CPR_4X          (ENCODER_BASE_CPR * 4)  // 256
+#define ENCODER_CPR_4X          (ENCODER_BASE_CPR)      // 64 effective counts
 
 /**
  * 电机减速比
@@ -209,12 +210,13 @@
 #define MOTOR_GEAR_RATIO        50
 
 /**
- * 轮子转一圈的总计数 (编码器CPR × 4倍频 × 减速比)
- * Total counts per wheel revolution (Encoder CPR × 4x × Gear ratio)
- * 计算: 64 × 4 × 50 = 12800
- * Calculation: 64 × 4 × 50 = 12800
+ * 轮子转一圈的总计数 (编码器有效CPR × 减速比)
+ * Total counts per wheel revolution (effective encoder CPR × gear ratio)
+ *
+ * 数据手册: 64 counts/rev (motor shaft, 4x) × 50:1 = 3200 counts/rev (output shaft)
+ * Datasheet: 64 × 50 = 3200 counts per gearbox output revolution
  */
-#define ENCODER_CPR             (ENCODER_CPR_4X * MOTOR_GEAR_RATIO)  // 12800
+#define ENCODER_CPR             (ENCODER_CPR_4X * MOTOR_GEAR_RATIO)  // 64 × 50 = 3200
 
 
 /* ========== PWM参数 / PWM Parameters ========== */

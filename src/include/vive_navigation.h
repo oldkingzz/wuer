@@ -14,6 +14,7 @@
 #include "esp_err.h"
 #include "astar.h"
 #include "grid_map.h"
+#include "robot_config.h"   //  ROBOT_BASE_LINEAR_SPEED
 
 /* ========== 导航参数 / Navigation Parameters ========== */
 
@@ -32,8 +33,11 @@
 /**
  * 最大线速度 (m/s)
  * Maximum linear velocity
+ *
+ * 这里与 ROBOT_BASE_LINEAR_SPEED 保持一致，这样任
+ * 手动/
  */
-#define NAV_MAX_LINEAR_VELOCITY     0.3f
+#define NAV_MAX_LINEAR_VELOCITY     ROBOT_BASE_LINEAR_SPEED
 
 /**
  * 最大角速度 (rad/s)

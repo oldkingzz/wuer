@@ -8,6 +8,12 @@
 #ifndef WEB_H
 #define WEB_H
 
+#include "robot_config.h"  //  ROBOT_BASE_LINEAR_SPEED 
+
+// C
+#define STR_HELPER(x) #x
+#define STR(x) STR_HELPER(x)
+
 // ESP-IDF compatible HTML page (no PROGMEM needed)
 static const char WEB_PAGE_HTML[] =
 "<!DOCTYPE html>"
@@ -154,13 +160,15 @@ static const char WEB_PAGE_HTML[] =
 "  </div>"
 "<script>"
 "const FIXED_RPM = 100;"
-"const MAX_LINEAR_VEL = 0.3;"
+"const MAX_LINEAR_VEL = " STR(ROBOT_BASE_LINEAR_SPEED) ";"
 "const MAX_ANGULAR_VEL = 1.5;"
 "let isDragging = false;"
 "let joystickArea, joystickStick;"
 "let areaRect, stickRadius;"
 "let currentMode = 'MANUAL';"
 "let modeSwitching = false;"
+"let lastSendTime = 0;"
+"const SEND_INTERVAL_MS = 20;"
 "const MODE = {"
 "  MANUAL: 'MANUAL',"
 "  WALL_FOLLOW: 'WALL_FOLLOW',"
@@ -278,7 +286,11 @@ static const char WEB_PAGE_HTML[] =
 "  let normX = deltaX / maxX;"
 "  let linear = normY * MAX_LINEAR_VEL;"
 "  let angular = -normX * MAX_ANGULAR_VEL;"
-"  sendVelocity(linear, angular);"
+"  const now = Date.now();"
+"  if (now - lastSendTime >= SEND_INTERVAL_MS) {"
+"    sendVelocity(linear, angular);"
+"    lastSendTime = now;"
+"  }"
 "  updateStatus(linear, angular);"
 "}"
 "function stopDrag() {"
@@ -432,6 +444,9 @@ static const char WEB_PAGE_HTML[] =
 "    if (!switched) return;"
 "  }"
 "  try {"
+"    await fetch('/stopChassis');"
+"    sendVelocity(0, 0);"
+"    await new Promise(resolve => setTimeout(resolve, 200));"
 "    const response = await fetch('/startWallFollow');"
 "    const data = await response.text();"
 "    console.log('Wall follow started:', data);"
@@ -445,6 +460,8 @@ static const char WEB_PAGE_HTML[] =
 "    const response = await fetch('/stopWallFollow');"
 "    const data = await response.text();"
 "    console.log('Wall follow stopped:', data);"
+"    await fetch('/stopChassis');"
+"    sendVelocity(0, 0);"
 "    updateWallFollowStatus();"
 "    if (currentMode === MODE.WALL_FOLLOW) {"
 "      updateModeUI(MODE.MANUAL);"

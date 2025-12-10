@@ -5,6 +5,7 @@
 
 #include <math.h>
 #include <string.h>
+#include "Arduino.h"      // 用于 Serial Plotter 输出 / For Serial Plotter output
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -94,26 +95,58 @@ static void chassis_pid_control_task(void *pvParameters)
         float left_actual_rpm = fabsf(-encoder2_get_rpm());   // Motor 2 = Left wheel (negate due to reversed wiring)
         float right_actual_rpm = fabsf(encoder_get_rpm());    // Motor 1 = Right wheel
 
-        // 获取目标转速 (可能为负值表示反向) / Get target RPM (can be negative for backward)
-        float left_target_rpm = g_chassis_velocity.left_wheel_rpm;
-        float right_target_rpm = g_chassis_velocity.right_wheel_rpm;
+	    // 获取目标转速 (可能为负值表示反向) / Get target RPM (can be negative for backward)
+	    float left_target_rpm = g_chassis_velocity.left_wheel_rpm;
+	    float right_target_rpm = g_chassis_velocity.right_wheel_rpm;
+
+	    // PID 输出（用于 Serial Plotter 可视化）/ PID outputs for Serial Plotter visualization
+	    float left_pwm = 0.0f;
+	    float right_pwm = 0.0f;
 
         if (g_chassis_velocity.is_moving) {
             // 如果正在进行方向切换，等待完成
             // If direction change is in progress, wait for completion
-            if (g_direction_changing) {
-                vTaskDelayUntil(&last_wake_time, period);
-                continue;
-            }
+	        if (g_direction_changing) {
+	            vTaskDelayUntil(&last_wake_time, period);
+	            continue;
+	        }
 
-            // 使用PID计算PWM占空比 (使用绝对值)
-            // Use PID to compute PWM duty cycle (using absolute values)
-            float left_pwm = pid_compute(&g_pid_left, fabsf(left_target_rpm), left_actual_rpm, dt);
-            float right_pwm = pid_compute(&g_pid_right, fabsf(right_target_rpm), right_actual_rpm, dt);
+	        // 使用PID计算PWM占空比 (使用绝对值)
+	        // Use PID to compute PWM duty cycle (using absolute values)
+	        float left_error = fabsf(left_target_rpm) - left_actual_rpm;
+	        float right_error = fabsf(right_target_rpm) - right_actual_rpm;
 
-            // 设置电机速度 / Set motor speeds
-            motor2_set_speed((uint32_t)(left_pwm + 0.5f));   // Left wheel
-            motor_set_speed((uint32_t)(right_pwm + 0.5f));   // Right wheel
+	        // 死区：误差 < 3 RPM时，保持当前PWM，避免抽搐
+	        // Dead zone: when error < 3 RPM, keep current PWM to avoid jitter
+	        static float last_left_pwm = 0.0f;
+	        static float last_right_pwm = 0.0f;
+
+	        if (fabsf(left_error) > 3.0f) {
+	            left_pwm = pid_compute(&g_pid_left, fabsf(left_target_rpm), left_actual_rpm, dt);
+	            last_left_pwm = left_pwm;
+	        } else {
+	            left_pwm = last_left_pwm;  // 保持上次PWM
+	        }
+
+	        if (fabsf(right_error) > 3.0f) {
+	            right_pwm = pid_compute(&g_pid_right, fabsf(right_target_rpm), right_actual_rpm, dt);
+	            last_right_pwm = right_pwm;
+	        } else {
+	            right_pwm = last_right_pwm;  // 保持上次PWM
+	        }
+
+	        // 设置电机速度 / Set motor speeds
+	        motor2_set_speed((uint32_t)(left_pwm + 0.5f));   // Left wheel
+	        motor_set_speed((uint32_t)(right_pwm + 0.5f));   // Right wheel
+
+	        // 调试输出：每1秒输出一次PID状态
+	        static int debug_count = 0;
+	        if (++debug_count >= 20) {  // 20 * 50ms = 1秒
+	            ESP_LOGI(TAG, "[PID] L: target=%.1f actual=%.1f pwm=%.0f | R: target=%.1f actual=%.1f pwm=%.0f",
+	                     fabsf(left_target_rpm), left_actual_rpm, left_pwm,
+	                     fabsf(right_target_rpm), right_actual_rpm, right_pwm);
+	            debug_count = 0;
+	        }
         } else {
             // 停止时重置PID / Reset PID when stopped
             pid_reset(&g_pid_left);
@@ -122,8 +155,8 @@ static void chassis_pid_control_task(void *pvParameters)
             motor2_set_speed(0);
         }
 
-        // 等待下一个控制周期 / Wait for next control period
-        vTaskDelayUntil(&last_wake_time, period);
+	    // 等待下一个控制周期 / Wait for next control period
+	    vTaskDelayUntil(&last_wake_time, period);
     }
 }
 
@@ -141,12 +174,12 @@ esp_err_t chassis_init(void)
     memset(&g_chassis_pose, 0, sizeof(chassis_pose_t));
 
     // 初始化PID控制器 / Initialize PID controllers
-    // 使用与之前相同的PID参数: Kp=10.0, Ki=0.5, Kd=0.1
-    // Using same PID parameters as before: Kp=10.0, Ki=0.5, Kd=0.1
-    pid_init(&g_pid_left, 10.0f, 0.5f, 0.1f);
+    // 平衡收敛速度和稳定性：Ki降低到2.5，Kd增大到0.2抑制震荡
+    // Balance convergence speed and stability: Ki=2.5, Kd=0.2 to dampen oscillation
+    pid_init(&g_pid_left, 10.0f, 2.5f, 0.2f);   // 左轮：Kp=10.0, Ki=2.5, Kd=0.2
     pid_set_limits(&g_pid_left, 0.0f, (float)MOTOR_PWM_MAX_DUTY);
 
-    pid_init(&g_pid_right, 10.0f, 0.5f, 0.1f);
+    pid_init(&g_pid_right, 10.0f, 2.5f, 0.2f);  // 右轮：Kp=10.0, Ki=2.5, Kd=0.2
     pid_set_limits(&g_pid_right, 0.0f, (float)MOTOR_PWM_MAX_DUTY);
 
     ESP_LOGI(TAG, "PID控制器已初始化 / PID controllers initialized");
@@ -297,16 +330,21 @@ esp_err_t chassis_set_velocity(float linear_velocity, float angular_velocity)
         g_prev_left_direction = left_direction;
         g_prev_right_direction = right_direction;
 
-        ESP_LOGI(TAG, "========================================");
-        ESP_LOGI(TAG, "底盘速度 / Chassis Velocity: v=%.3f m/s, ω=%.3f rad/s",
-                 linear_velocity, angular_velocity);
-        ESP_LOGI(TAG, "轮速目标 / Target Wheel RPM: 左=%.1f, 右=%.1f", left_rpm, right_rpm);
-        ESP_LOGI(TAG, "轮子方向 / Wheel Directions: 左=%s, 右=%s",
-                 left_direction == MOTOR_FORWARD ? "FORWARD" : (left_direction == MOTOR_BACKWARD ? "BACKWARD" : "STOP"),
-                 right_direction == MOTOR_FORWARD ? "FORWARD" : (right_direction == MOTOR_BACKWARD ? "BACKWARD" : "STOP"));
-        ESP_LOGI(TAG, "编码器原始读数 / Raw Encoder: 左=%.1f, 右=%.1f",
-                 encoder2_get_rpm(), encoder_get_rpm());
-        ESP_LOGI(TAG, "========================================");
+        // 减少日志输出频率
+        static int log_counter = 0;
+        if (++log_counter >= 20) {  // 每1秒输出一次
+            ESP_LOGI(TAG, "========================================");
+            ESP_LOGI(TAG, "底盘速度 / Chassis Velocity: v=%.3f m/s, ω=%.3f rad/s",
+                     linear_velocity, angular_velocity);
+            ESP_LOGI(TAG, "轮速目标 / Target Wheel RPM: 左=%.1f, 右=%.1f", left_rpm, right_rpm);
+            ESP_LOGI(TAG, "轮子方向 / Wheel Directions: 左=%s, 右=%s",
+                     left_direction == MOTOR_FORWARD ? "FORWARD" : (left_direction == MOTOR_BACKWARD ? "BACKWARD" : "STOP"),
+                     right_direction == MOTOR_FORWARD ? "FORWARD" : (right_direction == MOTOR_BACKWARD ? "BACKWARD" : "STOP"));
+            ESP_LOGI(TAG, "编码器原始读数 / Raw Encoder: 左=%.1f, 右=%.1f",
+                     encoder2_get_rpm(), encoder_get_rpm());
+            ESP_LOGI(TAG, "========================================");
+            log_counter = 0;
+        }
     } else {
         // 停止电机 / Stop motors
         motor_stop();
@@ -319,6 +357,12 @@ esp_err_t chassis_set_velocity(float linear_velocity, float angular_velocity)
         // 重置方向记录 / Reset direction tracking
         g_prev_left_direction = MOTOR_STOP;
         g_prev_right_direction = MOTOR_STOP;
+
+        // 强制清零底盘速度状态，防止残留
+        g_chassis_velocity.left_wheel_rpm = 0.0f;
+        g_chassis_velocity.right_wheel_rpm = 0.0f;
+        g_chassis_velocity.linear_velocity = 0.0f;
+        g_chassis_velocity.angular_velocity = 0.0f;
     }
 
     return ESP_OK;

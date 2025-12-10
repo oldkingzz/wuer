@@ -22,10 +22,12 @@ extern "C" {
 /**
  * @brief ToF sensor configuration
  */
-#define TOF_MAX_DISTANCE_MM          250  // Maximum valid distance (mm)
-#define TOF_CHANNEL_SWITCH_DELAY_MS  1    // Delay after channel switch (ms)
-                                          // 可以尝试减少到0来加快速度，但可能降低稳定性
-                                          // Reduce to 0 for faster switching, but may reduce stability
+#define TOF_MAX_DISTANCE_MM          500  // Maximum valid distance (mm)
+#define TOF_CHANNEL_SWITCH_DELAY_MS  2    // Delay after channel switch (ms)
+                                          // 减少到2ms以提高读取速度（只使用2个传感器）
+                                          // Reduced to 2ms for faster reading (only using 2 sensors)
+                                          // 原来10ms太长，导致50ms周期内无法完成2个传感器读取
+                                          // Previous 10ms was too long, couldn't finish 2 sensors in 50ms period
 
 /**
  * @brief ToF sensor data structure
@@ -34,6 +36,7 @@ typedef struct {
     uint16_t distance_mm;      // Distance in millimeters
     bool valid;                // True if measurement is valid
     uint8_t range_status;      // VL53L0X range status code
+    uint32_t timestamp_ms;     // Timestamp of measurement (millis())
 } tof_data_t;
 
 /**
@@ -148,6 +151,56 @@ uint16_t tof_get_left_rear_distance(void);
 // 兼容旧代码的函数别名
 #define tof_get_left_distance()  tof_get_left_front_distance()
 #define tof_get_right_distance() tof_get_front_distance()
+
+/**
+ * @brief Start asynchronous ToF reading task
+ *
+ * Starts a background FreeRTOS task that continuously reads all ToF sensors.
+ * Other tasks can call tof_get_cached_*() functions to get latest readings without blocking.
+ *
+ * @return ESP_OK on success, ESP_FAIL on error
+ */
+esp_err_t tof_start_async_reading(void);
+
+/**
+ * @brief Stop asynchronous ToF reading task
+ */
+void tof_stop_async_reading(void);
+
+/**
+ * @brief Get cached ToF data (non-blocking)
+ *
+ * Returns the latest cached reading from the async reading task.
+ * This function is non-blocking and returns immediately.
+ *
+ * @param position ToF sensor position
+ * @param data Pointer to store cached data
+ * @return ESP_OK if data is valid, ESP_FAIL if no valid data available
+ */
+esp_err_t tof_get_cached(tof_position_t position, tof_data_t *data);
+
+/**
+ * @brief Get cached front ToF distance (non-blocking)
+ *
+ * @return Distance in millimeters, or 0xFFFF if invalid/stale
+ */
+uint16_t tof_get_cached_front_distance(void);
+
+/**
+ * @brief Get cached left-front ToF distance (non-blocking)
+ *
+ * @return Distance in millimeters, or 0xFFFF if invalid/stale
+ */
+uint16_t tof_get_cached_left_front_distance(void);
+
+/**
+ * @brief Check if cached data is fresh (updated within timeout)
+ *
+ * @param position ToF sensor position
+ * @param timeout_ms Maximum age of data in milliseconds
+ * @return true if data is fresh, false if stale or invalid
+ */
+bool tof_is_data_fresh(tof_position_t position, uint32_t timeout_ms);
 
 #ifdef __cplusplus
 }

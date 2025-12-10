@@ -26,7 +26,7 @@
 #include "src/include/motor_driver.h"
 #include "src/include/encoder.h"
 #include "src/include/user_input.h"
-#include "src/include/chassis.h"
+#include "src/include/chassis_v2.h"  // 使用新的Chassis V2
 #include "src/include/tof_sensor.h"
 #include "src/include/imu_sensor.h"
 #include "src/include/vive_sensor.h"
@@ -91,12 +91,12 @@ static void sensor_update_task(void *pvParameters)
     Serial.flush();
 
     while (1) {
-        // Read all ToF sensors (safe even if not initialized)
-        // 新的参数顺序: top, front, left_front, left_rear
-        esp_err_t ret = tof_read_all(&top_tof, &front_tof, &left_front_tof, &left_rear_tof);
+        // ❌ 不再直接读取ToF传感器！改用异步读取任务
+        // ToF数据由 tof_async_reading_task 在后台更新
+        // 其他任务通过 tof_get_cached_*() 获取最新值
 
         // Read IMU data (safe even if not initialized)
-        ret = imu_read(&imu_data);
+        esp_err_t ret = imu_read(&imu_data);
 
         // Delay 50ms (20Hz update rate)
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -157,38 +157,23 @@ static void status_monitor_task(void *pvParameters)
 
         Serial.println();
 
-        // Get chassis velocity
-        chassis_velocity_t chassis_vel;
-        chassis_get_velocity(&chassis_vel);
+        // Chassis V2 没有get_velocity接口，直接读取编码器
+        Serial.println("Wheel Speeds:");
 
-        Serial.println("Chassis Velocity:");
-        Serial.print("  Linear: ");
-        Serial.print(chassis_vel.linear_velocity, 3);
-        Serial.println(" m/s");
-        Serial.print("  Angular: ");
-        Serial.print(chassis_vel.angular_velocity, 3);
-        Serial.println(" rad/s");
-        Serial.print("  State: ");
-        Serial.println(chassis_vel.is_moving ? "MOVING" : "STOPPED");
+        // Get actual wheel speeds (raw reading)
+        float left_actual_raw = encoder2_get_rpm();   // Motor 2 = Left wheel
+        float right_actual_raw = encoder_get_rpm();   // Motor 1 = Right wheel
+
+        Serial.print("  Left Actual (raw): ");
+        Serial.print(left_actual_raw, 2);
+        Serial.println(" RPM");
+        Serial.print("  Right Actual (raw): ");
+        Serial.print(right_actual_raw, 2);
+        Serial.println(" RPM");
 
         Serial.println();
-        Serial.println("Wheel Speeds:");
-        Serial.print("  Left Target: ");
-        Serial.print(chassis_vel.left_wheel_rpm, 2);
-        Serial.println(" RPM");
-        Serial.print("  Right Target: ");
-        Serial.print(chassis_vel.right_wheel_rpm, 2);
-        Serial.println(" RPM");
-
-        // Get actual wheel speeds
-        float left_actual = encoder2_get_rpm();   // Motor 2 = Left wheel
-        float right_actual = encoder_get_rpm();   // Motor 1 = Right wheel
-        Serial.print("  Left Actual: ");
-        Serial.print(left_actual, 2);
-        Serial.println(" RPM");
-        Serial.print("  Right Actual: ");
-        Serial.print(right_actual, 2);
-        Serial.println(" RPM");
+        Serial.println("Note: Chassis V2 PID debug output is in ESP_LOGI format");
+        Serial.println("      Check Serial Monitor for '[CHASSIS_V2]' messages");
 
         Serial.println();
         Serial.println("Encoder Data:");
@@ -213,15 +198,15 @@ static void status_monitor_task(void *pvParameters)
         Serial.println();
         Serial.println("Sensor Data:");
 
-        // ToF sensors
+        // ToF sensors - 使用缓存接口（非阻塞）
         // 现在的实际布置：
         //   SD1 -> 前方 ToF
         //   SD2 -> 左前 ToF
         //   SD3 -> 左后 ToF
         //   SD0 暂不使用
-        uint16_t front_tof      = tof_get_front_distance();
-        uint16_t left_front_tof = tof_get_left_front_distance();
-        uint16_t left_rear_tof  = tof_get_left_rear_distance();
+        uint16_t front_tof      = tof_get_cached_front_distance();
+        uint16_t left_front_tof = tof_get_cached_left_front_distance();
+        uint16_t left_rear_tof  = tof_get_left_rear_distance();  // SD3未使用异步读取
 
         Serial.print("  Front ToF (SD1): ");
         if (front_tof == 0xFFFF) {
@@ -311,19 +296,27 @@ static void chassis_control_task(void *pvParameters)
     float last_angular = 0.0f;
 
     while (1) {
-        // Get chassis velocity from web interface
-        float linear_velocity = web_server_get_linear_velocity();
-        float angular_velocity = web_server_get_angular_velocity();
+        // Only control chassis if manual control is enabled
+        // (disabled during wall following or navigation)
+        if (web_server_is_manual_control_enabled()) {
+            // Get chassis velocity from web interface
+            float linear_velocity = web_server_get_linear_velocity();
+            float angular_velocity = web_server_get_angular_velocity();
 
-        // Only update chassis when velocity changes
-        if (linear_velocity != last_linear || angular_velocity != last_angular) {
-            chassis_set_velocity(linear_velocity, angular_velocity);
-            last_linear = linear_velocity;
-            last_angular = angular_velocity;
+            // Only update chassis when velocity changes
+            if (linear_velocity != last_linear || angular_velocity != last_angular) {
+                chassis_v2_set_velocity(linear_velocity, angular_velocity);
+                last_linear = linear_velocity;
+                last_angular = angular_velocity;
+            }
+        } else {
+            // Manual control disabled, reset last values
+            last_linear = 0.0f;
+            last_angular = 0.0f;
         }
 
-        // 控制周期 50ms / Control period 50ms
-        vTaskDelay(pdMS_TO_TICKS(50));
+        // 控制周期 10ms (100Hz) - 减少延迟 / Control period 10ms (100Hz) - reduce latency
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -419,6 +412,16 @@ void setup()
         Serial.println("WARNING: ToF sensors init failed (continuing anyway)");
     } else {
         Serial.println("OK: ToF sensors initialized");
+
+        // 启动异步ToF读取任务
+        Serial.println("  Starting async ToF reading task...");
+        Serial.flush();
+        ret = tof_start_async_reading();
+        if (ret == ESP_OK) {
+            Serial.println("  OK: Async ToF reading task started");
+        } else {
+            Serial.println("  WARNING: Failed to start async ToF reading task");
+        }
     }
     Serial.flush();
 
@@ -442,15 +445,15 @@ void setup()
     }
     Serial.flush();
 
-    Serial.println("Step 9/10: Initializing chassis control...");
+    Serial.println("Step 9/10: Initializing chassis control V2...");
     Serial.flush();
-    ret = chassis_init();
+    ret = chassis_v2_init();
     if (ret != ESP_OK) {
-        Serial.println("ERROR: Chassis control init failed!");
+        Serial.println("ERROR: Chassis V2 control init failed!");
         Serial.flush();
         while(1) { delay(1000); }
     }
-    Serial.println("OK: Chassis control initialized");
+    Serial.println("OK: Chassis V2 control initialized");
     Serial.flush();
 
     // 在WiFi初始化前检查内存

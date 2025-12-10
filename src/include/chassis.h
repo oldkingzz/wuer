@@ -62,7 +62,7 @@
  * 注意：轮子从65mm增大到109mm后，同样RPM速度提升1.68倍
  * Note: Wheel increased from 65mm to 109mm, speed increased 1.68x at same RPM
  */
-#define CHASSIS_MAX_LINEAR_VELOCITY     0.6f
+#define CHASSIS_MAX_LINEAR_VELOCITY     0.5f
 
 /**
  * 最大角速度 (rad/s)
@@ -77,7 +77,7 @@
  * 降低到60 RPM以保持安全速度 (约0.34 m/s)
  * Reduced to 60 RPM to maintain safe speed (about 0.34 m/s)
  */
-#define CHASSIS_MAX_WHEEL_RPM           60
+#define CHASSIS_MAX_WHEEL_RPM           100
 
 /* ========== 底盘状态结构体 / Chassis State Structure ========== */
 

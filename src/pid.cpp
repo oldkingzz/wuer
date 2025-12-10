@@ -71,8 +71,10 @@ float pid_compute(pid_controller_t *pid, float setpoint, float measurement, floa
     // 积分项（简单矩形积分）/ integral term (rectangle rule)
     pid->integrator += pid->ki * error * dt_seconds;
 
-    // 抗积分饱和：积分项单独限幅 / anti-windup: clamp integrator term
-    float i_term = clampf(pid->integrator, pid->out_min, pid->out_max);
+    // 抗积分饱和：积分项限幅到输出范围的80%，留空间给P和D项
+    // anti-windup: clamp integrator to 80% of output range, leave room for P and D
+    float i_max = (pid->out_max - pid->out_min) * 0.8f;
+    float i_term = clampf(pid->integrator, -i_max, i_max);
     pid->integrator = i_term;
 
     // 微分项（对测量微分，更抗噪）/ derivative on measurement (less noise)
