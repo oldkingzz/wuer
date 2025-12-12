@@ -28,8 +28,9 @@ static const char *TAG = "NAV";
 // Constants & Tunings
 // ==========================================
 #define NAV_LOOKAHEAD_DIST_INCH 10.0f // Pure Pursuit Lookahead
-#define NAV_GOAL_TOLERANCE_INCH 2.0f  // Stop when closer than this
-#define NAV_YAW_Align_TOLERANCE 0.1f  // ~5.7 degrees
+#define NAV_GOAL_TOLERANCE_INCH                                                \
+  4.0f // Increased to 4.0 to excessive precision requirements causing stalls
+#define NAV_YAW_Align_TOLERANCE 0.1f // ~5.7 degrees
 
 // USE CONSTANT VELOCITY FROM V2 MACROS
 // 用户要求降低线速度到 0.1 以保证安全
@@ -161,6 +162,7 @@ static void update_localization_step(float dt) {
 // Motion Control Loop (Run every 20ms if NAVIGATING)
 // ==========================================
 static void update_motion_control_step(void) {
+  // STRICTLY EXIT if not navigating. Do NOT touch motors.
   if (g_nav_status.state != NAV_STATE_NAVIGATING)
     return;
   if (!g_current_pose.valid) {
@@ -256,6 +258,26 @@ static void update_motion_control_step(void) {
 // ==========================================
 // Main Task
 // ==========================================
+// Task Handle (Not used for Suspend anymore to avoid Deadlock)
+static TaskHandle_t g_nav_task_handle = NULL;
+static volatile bool g_nav_paused = false; // Safe Pause Flag
+
+void vive_nav_suspend_task(void) {
+  // SOFT STOP: Don't kill the task, just tell it to sleep.
+  // This prevents Serial/I2C deadlocks.
+  g_nav_paused = true;
+  chassis_v2_set_velocity(0, 0);
+  ESP_LOGW(TAG, "NAV TASK PAUSED (Safe Soft Stop)");
+}
+
+void vive_nav_resume_task(void) {
+  g_nav_paused = false;
+  ESP_LOGI(TAG, "NAV TASK RESUMED");
+}
+
+// ==========================================
+// Main Task
+// ==========================================
 static void navigation_update_task(void *pvParameters) {
   TickType_t last_wake = xTaskGetTickCount();
   const TickType_t period = pdMS_TO_TICKS(20);
@@ -264,6 +286,19 @@ static void navigation_update_task(void *pvParameters) {
   ESP_LOGI(TAG, "Nav Task Started (Loc+Motion)");
 
   while (1) {
+    // 0. SAFE PAUSE CHECK
+    if (g_nav_paused) {
+      static TickType_t last_pause_log = 0;
+      TickType_t now_tick = xTaskGetTickCount();
+      if (now_tick - last_pause_log > pdMS_TO_TICKS(2000)) {
+        // USER REQUESTED EXPLICIT LOG
+        printf("NAV TASK: I AM PAUSED. SLEEPING... (Not touching motors)\n");
+        last_pause_log = now_tick;
+      }
+      vTaskDelay(pdMS_TO_TICKS(100)); // Sleep 100ms
+      continue;                       // Skip everything
+    }
+
     // 1. Localization
     update_localization_step(0.02f);
 
@@ -301,8 +336,10 @@ esp_err_t vive_nav_init(void) {
   // Init Subsystems
   nav_mission_init();
 
-  xTaskCreatePinnedToCore(navigation_update_task, "nav_upd", 4096, NULL, 5,
-                          NULL, 1);
+  // Ensure Nav task priority (3) is LOWER than Mission task (4)
+  // so Mission can override/control commands without fighting for CPU time.
+  xTaskCreatePinnedToCore(navigation_update_task, "nav_upd", 4096, NULL, 3,
+                          &g_nav_task_handle, 1);
   return ESP_OK;
 }
 

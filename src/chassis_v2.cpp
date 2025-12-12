@@ -21,6 +21,7 @@
 #include "include/encoder.h"
 #include "include/motor_driver.h"
 #include "include/pid_v2.h"
+#include <Arduino.h>
 #include <math.h>
 
 static const char *TAG = "CHASSIS_V2";
@@ -259,6 +260,14 @@ esp_err_t chassis_v2_init(void) {
 }
 
 esp_err_t chassis_v2_set_velocity(float linear, float angular) {
+  // Debug Log (Rate Limited) to find out who is controlling motors
+  static TickType_t last_log = 0;
+  TickType_t now = xTaskGetTickCount();
+  if ((now - last_log) >= pdMS_TO_TICKS(200)) { // Print 5 times a second
+    Serial.printf("CHASSIS_V2: CMD lin=%.2f ang=%.2f\n", linear, angular);
+    last_log = now;
+  }
+
   // Fix: Reverse linear direction (Joystick Forward was Robot Backward).
   // This ensures Positive Linear = Robot Moves Forward = Joystick Forward.
   linear = -linear;
@@ -292,12 +301,12 @@ esp_err_t chassis_v2_set_velocity(float linear, float angular) {
   g_target.is_moving = (fabsf(linear) > 0.001f || fabsf(angular) > 0.001f);
 
   // 6. 调试输出（节流）
-  static TickType_t last_log = 0;
-  TickType_t now = xTaskGetTickCount();
-  if ((now - last_log) >= pdMS_TO_TICKS(1000)) {
+  static TickType_t last_log_info = 0;
+  TickType_t now_info = xTaskGetTickCount();
+  if ((now_info - last_log_info) >= pdMS_TO_TICKS(1000)) {
     ESP_LOGI(TAG, "Set velocity: v=%.3f ω=%.3f → L=%.1f R=%.1f RPM", linear,
              angular, left_rpm, right_rpm);
-    last_log = now;
+    last_log_info = now_info;
   }
 
   return ESP_OK;
