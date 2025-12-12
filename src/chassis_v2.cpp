@@ -19,6 +19,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "include/encoder.h"
+#include "include/gpio_config.h"
 #include "include/motor_driver.h"
 #include "include/pid_v2.h"
 #include <Arduino.h>
@@ -142,6 +143,9 @@ static void control_task(void *param) {
   const float dt = CONTROL_PERIOD_MS / 1000.0f; // 0.05秒
 
   while (1) {
+    // Critical: Update Odometry periodically!
+    chassis_v2_update_odometry(dt);
+
     if (g_target.is_moving) {
       // 1. 读取编码器（实际转速）
       float left_actual = fabsf(get_left_rpm());
@@ -379,5 +383,65 @@ esp_err_t chassis_v2_get_odometry(float *x, float *y, float *theta) {
   *x = g_odom.x;
   *y = g_odom.y;
   *theta = g_odom.theta;
+  return ESP_OK;
+}
+
+esp_err_t chassis_v2_move_dist_blocking(float dist_m, float speed_m_s) {
+  if (speed_m_s < 0) {
+    speed_m_s = -speed_m_s;
+  }
+  if (fabsf(dist_m) < 0.001f) {
+    return ESP_OK;
+  }
+
+  // 1. Calculate target pulses
+  // dist = pulses / CPR * PI * D
+  // pulses = dist * CPR / (PI * D)
+  // Note: ENCODER_CPR is defined in gpio_config.h (default 3200)
+  float pulses_per_m = (float)ENCODER_CPR / (M_PI * WHEEL_DIAMETER_M);
+  int32_t target_pulses = (int32_t)(fabsf(dist_m) * pulses_per_m);
+
+  // 2. Read start pulses
+  int32_t start_p1 = encoder_get_count();
+  int32_t start_p2 = encoder2_get_count();
+
+  ESP_LOGI(TAG, "Blocking Move: Dist=%.3fm -> %ld pulses. Start: %ld, %ld",
+           dist_m, (long)target_pulses, (long)start_p1, (long)start_p2);
+
+  // 3. Start Moving
+  float direction = (dist_m > 0) ? 1.0f : -1.0f;
+  chassis_v2_set_velocity(direction * speed_m_s, 0.0f);
+
+  int timeout_ms = 5000; // 5 seconds safety timeout
+  int elapsed = 0;
+
+  while (elapsed < timeout_ms) {
+    int32_t curr_p1 = encoder_get_count();
+    int32_t curr_p2 = encoder2_get_count();
+
+    int32_t diff1 = abs(curr_p1 - start_p1);
+    int32_t diff2 = abs(curr_p2 - start_p2);
+    int32_t avg_diff = (diff1 + diff2) / 2;
+
+    if (avg_diff >= target_pulses) {
+      break;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10)); // 10ms check
+    elapsed += 10;
+  }
+
+  chassis_v2_stop();
+
+  if (elapsed >= timeout_ms) {
+    ESP_LOGW(TAG, "Blocking Move TIMEOUT! Encoders might be broken.");
+  }
+
+  ESP_LOGI(TAG, "Blocking Move Done. Diff: %ld / %ld",
+           (long)((abs(encoder_get_count() - start_p1) +
+                   abs(encoder2_get_count() - start_p2)) /
+                  2),
+           (long)target_pulses);
+
   return ESP_OK;
 }

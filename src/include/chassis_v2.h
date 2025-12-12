@@ -82,6 +82,16 @@ esp_err_t chassis_v2_reset_odometry(void);
  */
 esp_err_t chassis_v2_get_wheel_dist_m(float *left_total, float *right_total);
 
+/**
+ * @brief Blocking move forward/backward for fixed distance
+ *
+ * @param dist_m Distance to move in meters (positive for forward, negative for
+ * backward)
+ * @param speed_m_s Speed in m/s (must be positive)
+ * @return ESP_OK on success
+ */
+esp_err_t chassis_v2_move_dist_blocking(float dist_m, float speed_m_s);
+
 #ifdef __cplusplus
 }
 #endif

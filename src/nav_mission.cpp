@@ -47,125 +47,215 @@ static float normalize_angle(float angle) {
 // M1: Low Tower Blue (ID 1)
 static void run_mission_attack_low_tower_blue() {
   static int step = 0;
-  static uint32_t step_start_time = 0;
 
   if (g_mission_status.state == NAV_MISSION_STATE_GOTO_PRE_POINT) {
     step = 0;
-    g_mission_status.state =
-        NAV_MISSION_STATE_ALIGN_TOF; // Mark as started (reusing ALIGN_TOF
-                                     // state)
+    g_mission_status.state = NAV_MISSION_STATE_ALIGN_TOF;
   }
 
-  uint32_t now = pdTICKS_TO_MS(xTaskGetTickCount());
   nav_status_t nav_st;
   vive_nav_get_status(&nav_st);
+  uint32_t now = pdTICKS_TO_MS(xTaskGetTickCount());
+
+  // Debug Print
+  static int last_step_print = -1;
+  if (step != last_step_print) {
+    ESP_LOGI(TAG, "M1: Step %d", step);
+    last_step_print = step;
+  }
 
   switch (step) {
-  case 0: // Start Navigation to (40, 83)
-    ESP_LOGI(TAG, "M1(LowBlue): Navigating to (40, 83)...");
-    if (vive_nav_set_target_map(40, 83) == ESP_OK) {
+  case 0: // Waypoint 1: (40, 20)
+    if (vive_nav_set_target_map(40, 40) == ESP_OK) {
       step = 1;
-    } else {
-      ESP_LOGE(TAG, "M1: Failed to set target!");
-      nav_mission_stop();
     }
     break;
 
-  case 1: // Wait for Arrival
+  case 1: // Wait for Waypoint 1
     if (nav_st.state == NAV_STATE_ARRIVED) {
-      ESP_LOGI(TAG, "M1: Arrived. Stopping.");
-      vive_nav_stop();
-      nav_mission_stop(); // Stop Mission Here
+      step = 2;
     }
     break;
 
-  case 2: // Align to -90 deg
+  case 2: // Waypoint 2: (40, 62)
+    ESP_LOGI(TAG, "M1: Navigating to (40, 62)...");
+    if (vive_nav_set_target_map(40, 62) == ESP_OK) {
+      step = 3;
+    }
+    break;
+
+  case 3: // Wait for Waypoint 2
+    if (nav_st.state == NAV_STATE_ARRIVED) {
+      vive_nav_stop(); // Take over control for alignment
+      step = 4;
+    }
+    break;
+
+  case 4: // Check Alignment: Target +90 deg (+Y)
   {
-    float target_heading = -M_PI / 2.0f; // -90 deg
-    // nav_st.heading is Degree (0-360). Convert to Radian (-PI to PI)
-    float current_heading_deg = nav_st.current_pose.heading;
-    float current_heading = current_heading_deg * M_PI / 180.0f;
+    float target_heading = M_PI / 2.0f; // +90 deg = +PI/2
+
+    // nav_st.current_pose.heading is in Degrees. Convert to Rad.
+    float current_heading = nav_st.current_pose.heading * M_PI / 180.0f;
     current_heading = normalize_angle(current_heading);
 
     float error = normalize_angle(target_heading - current_heading);
+    float error_deg = error * 180.0f / M_PI;
 
-    // Debug Log (Rate Limited)
-    static uint32_t last_log = 0;
-    if (now - last_log > 200) {
-      ESP_LOGI(TAG, "M1 HeadErr: %.2f (T:%.2f C:%.2f)", error, target_heading,
-               current_heading);
-      Serial.printf("M1 HeadErr: %.2f (T:%.2f C:%.2f)\n", error, target_heading,
-                    current_heading);
-      last_log = now;
-    }
-
-    if (fabs(error) < 0.2f) { // ~11 deg tolerance
-      chassis_v2_set_velocity(0, 0);
-      step = 3;
-      step_start_time = now;
-      ESP_LOGI(TAG, "M1: Aligned. Error=%.2f", error);
+    // Tolerance 20 degrees
+    if (fabs(error_deg) < 20.0f) {
+      chassis_v2_set_velocity(0, 0); // Stop rotation
+      ESP_LOGI(TAG, "M1: Aligned. Error=%.2f deg. Starting Attack.", error_deg);
+      step = 5;
     } else {
-      // P Control - Reduced Gain
-      float ang_cmd = error * 1.0f;
+      // P-Control for alignment
+      // Debug occasionally
+      static uint32_t last_log = 0;
+      if (now - last_log > 500) {
+        ESP_LOGI(TAG, "M1 Aligning... Err=%.1f deg", error_deg);
+        last_log = now;
+      }
+
+      float kp = 1.0f;
+      float ang_cmd = error * kp;
+      // Clamp
       if (ang_cmd > 1.0f)
         ang_cmd = 1.0f;
       if (ang_cmd < -1.0f)
         ang_cmd = -1.0f;
       // Deadband
-      if (fabs(ang_cmd) < 0.1f)
-        ang_cmd = (ang_cmd > 0) ? 0.1f : -0.1f;
+      float min_rot = 0.15f;
+      if (fabs(ang_cmd) < min_rot)
+        ang_cmd = (ang_cmd > 0) ? min_rot : -min_rot;
 
       chassis_v2_set_velocity(0.0f, ang_cmd);
     }
   } break;
 
-  case 3: // Dash Forward 6 inches (0.1524 m)
-  {
-    static float start_l = 0, start_r = 0;
-    if (step_start_time == now)
-      chassis_v2_get_wheel_dist_m(&start_l, &start_r);
+  case 5: // Attack: Forward 6cm
+    ESP_LOGI(TAG, "M1: Forward 6cm");
+    chassis_v2_move_dist_blocking(0.06f, 0.1f);
+    step = 6;
+    break;
 
-    float curr_l, curr_r;
-    chassis_v2_get_wheel_dist_m(&curr_l, &curr_r);
-    float dist = ((curr_l - start_l) + (curr_r - start_r)) / 2.0f;
+  case 6: // Attack: Backward 6cm
+    ESP_LOGI(TAG, "M1: Backward 6cm");
+    chassis_v2_move_dist_blocking(-0.06f, 0.1f);
+    step = 7;
+    break;
 
-    if (dist >= 0.1524f) {
-      chassis_v2_set_velocity(0, 0);
-      step = 4;
-      step_start_time = now;
-      ESP_LOGI(TAG, "M1: Dash Done. Retreating...");
-    } else {
-      chassis_v2_set_velocity(0.1f, 0.0f);
-    }
-  } break;
-
-  case 4: // Retreat 6 inches
-  {
-    static float start_l = 0, start_r = 0;
-    if (step_start_time == now)
-      chassis_v2_get_wheel_dist_m(&start_l, &start_r);
-
-    float curr_l, curr_r;
-    chassis_v2_get_wheel_dist_m(&curr_l, &curr_r);
-    float dist = ((curr_l - start_l) + (curr_r - start_r)) / 2.0f;
-
-    if (dist <= -0.1524f) {
-      chassis_v2_set_velocity(0, 0);
-      step = 5;
-      ESP_LOGI(TAG, "M1: Retreat Done. Mission Complete.");
-    } else {
-      chassis_v2_set_velocity(-0.1f, 0.0f);
-    }
-  } break;
-
-  case 5: // Finish
+  case 7: // Finish
+    ESP_LOGI(TAG, "M1 Complete.");
     nav_mission_stop();
     break;
   }
 }
 
 static void run_mission_attack_high_tower_blue() {}
-static void run_mission_attack_nexus_blue() {}
+static void run_mission_attack_nexus_blue() {
+  static int step = 0;
+
+  if (g_mission_status.state == NAV_MISSION_STATE_GOTO_PRE_POINT) {
+    step = 0;
+    g_mission_status.state = NAV_MISSION_STATE_ALIGN_TOF;
+  }
+
+  nav_status_t nav_st;
+  vive_nav_get_status(&nav_st);
+  uint32_t now = pdTICKS_TO_MS(xTaskGetTickCount());
+
+  // Debug Print
+  static int last_step_print = -1;
+  if (step != last_step_print) {
+    ESP_LOGI(TAG, "M3: Step %d", step);
+    last_step_print = step;
+  }
+
+  float target_heading = -M_PI / 2.0f; // -90 deg (-Y)
+
+  switch (step) {
+  case 0: // Waypoint 1: (40, 40)
+    if (vive_nav_set_target_map(40, 40) == ESP_OK) {
+      step = 1;
+    }
+    break;
+
+  case 1: // Wait for Waypoint 1
+    if (nav_st.state == NAV_STATE_ARRIVED) {
+      step = 2;
+    }
+    break;
+
+  case 2: // Waypoint 2: (40, 15)
+    ESP_LOGI(TAG, "M3: Navigating to (40, 15)...");
+    if (vive_nav_set_target_map(40, 15) == ESP_OK) {
+      step = 3;
+    }
+    break;
+
+  case 3: // Wait for Waypoint 2
+    if (nav_st.state == NAV_STATE_ARRIVED) {
+      vive_nav_stop(); // Take over control for alignment
+      step = 4;
+    }
+    break;
+
+  case 4: // Check Alignment: Target -90 deg (-Y)
+  {
+    // nav_st.current_pose.heading is in Degrees. Convert to Rad.
+    float current_heading = nav_st.current_pose.heading * M_PI / 180.0f;
+    current_heading = normalize_angle(current_heading);
+
+    float error = normalize_angle(target_heading - current_heading);
+    float error_deg = error * 180.0f / M_PI;
+
+    // Tolerance 20 degrees
+    if (fabs(error_deg) < 20.0f) {
+      chassis_v2_set_velocity(0, 0); // Stop rotation
+      ESP_LOGI(TAG, "M3: Aligned. Error=%.2f deg. Starting Attack.", error_deg);
+      step = 5;
+    } else {
+      // P-Control for alignment
+      static uint32_t last_log = 0;
+      if (now - last_log > 500) {
+        ESP_LOGI(TAG, "M3 Aligning... Err=%.1f deg", error_deg);
+        last_log = now;
+      }
+
+      float kp = 1.0f;
+      float ang_cmd = error * kp;
+      // Clamp and Deadband
+      if (ang_cmd > 1.0f)
+        ang_cmd = 1.0f;
+      if (ang_cmd < -1.0f)
+        ang_cmd = -1.0f;
+
+      float min_rot = 0.15f;
+      if (fabs(ang_cmd) < min_rot)
+        ang_cmd = (ang_cmd > 0) ? min_rot : -min_rot;
+
+      chassis_v2_set_velocity(0.0f, ang_cmd);
+    }
+  } break;
+
+  case 5: // Attack: Forward 10cm
+    ESP_LOGI(TAG, "M3: Forward 10cm");
+    chassis_v2_move_dist_blocking(0.1f, 0.1f);
+    step = 6;
+    break;
+
+  case 6: // Attack: Backward 10cm
+    ESP_LOGI(TAG, "M3: Backward 10cm");
+    chassis_v2_move_dist_blocking(-0.1f, 0.1f);
+    step = 7;
+    break;
+
+  case 7: // Finish
+    ESP_LOGI(TAG, "M3 Complete.");
+    nav_mission_stop();
+    break;
+  }
+}
 
 // M2: Low Tower Red (ID 2)
 static void run_mission_attack_low_tower_red() {
@@ -239,7 +329,109 @@ static void run_mission_attack_low_tower_red() {
   }
 }
 static void run_mission_attack_high_tower_red() {}
-static void run_mission_attack_nexus_red() {}
+static void run_mission_attack_nexus_red() {
+  static int step = 0;
+
+  if (g_mission_status.state == NAV_MISSION_STATE_GOTO_PRE_POINT) {
+    step = 0;
+    g_mission_status.state = NAV_MISSION_STATE_ALIGN_TOF;
+  }
+
+  nav_status_t nav_st;
+  vive_nav_get_status(&nav_st);
+  uint32_t now = pdTICKS_TO_MS(xTaskGetTickCount());
+
+  // Debug Print
+  static int last_step_print = -1;
+  if (step != last_step_print) {
+    ESP_LOGI(TAG, "M4: Step %d", step);
+    last_step_print = step;
+  }
+
+  float target_heading = M_PI / 2.0f; // +90 deg (+Y)
+
+  switch (step) {
+  case 0: // Waypoint 1: (40, 100)
+    if (vive_nav_set_target_map(40, 100) == ESP_OK) {
+      step = 1;
+    }
+    break;
+
+  case 1: // Wait for Waypoint 1
+    if (nav_st.state == NAV_STATE_ARRIVED) {
+      step = 2;
+    }
+    break;
+
+  case 2: // Waypoint 2: (40, 130)
+    ESP_LOGI(TAG, "M4: Navigating to (40, 130)...");
+    if (vive_nav_set_target_map(40, 130) == ESP_OK) {
+      step = 3;
+    }
+    break;
+
+  case 3: // Wait for Waypoint 2
+    if (nav_st.state == NAV_STATE_ARRIVED) {
+      vive_nav_stop(); // Take over control for alignment
+      step = 4;
+    }
+    break;
+
+  case 4: // Check Alignment: Target +90 deg (+Y)
+  {
+    float current_heading = nav_st.current_pose.heading * M_PI / 180.0f;
+    current_heading = normalize_angle(current_heading);
+
+    float error = normalize_angle(target_heading - current_heading);
+    float error_deg = error * 180.0f / M_PI;
+
+    // Tolerance 20 degrees
+    if (fabs(error_deg) < 20.0f) {
+      chassis_v2_set_velocity(0, 0); // Stop rotation
+      ESP_LOGI(TAG, "M4: Aligned. Error=%.2f deg. Starting Attack.", error_deg);
+      step = 5;
+    } else {
+      // P-Control for alignment
+      static uint32_t last_log = 0;
+      if (now - last_log > 500) {
+        ESP_LOGI(TAG, "M4 Aligning... Err=%.1f deg", error_deg);
+        last_log = now;
+      }
+
+      float kp = 1.0f;
+      float ang_cmd = error * kp;
+      // Clamp and Deadband
+      if (ang_cmd > 1.0f)
+        ang_cmd = 1.0f;
+      if (ang_cmd < -1.0f)
+        ang_cmd = -1.0f;
+
+      float min_rot = 0.15f;
+      if (fabs(ang_cmd) < min_rot)
+        ang_cmd = (ang_cmd > 0) ? min_rot : -min_rot;
+
+      chassis_v2_set_velocity(0.0f, ang_cmd);
+    }
+  } break;
+
+  case 5: // Attack: Forward 10cm
+    ESP_LOGI(TAG, "M4: Forward 10cm");
+    chassis_v2_move_dist_blocking(0.1f, 0.1f);
+    step = 6;
+    break;
+
+  case 6: // Attack: Backward 10cm
+    ESP_LOGI(TAG, "M4: Backward 10cm");
+    chassis_v2_move_dist_blocking(-0.1f, 0.1f);
+    step = 7;
+    break;
+
+  case 7: // Finish
+    ESP_LOGI(TAG, "M4 Complete.");
+    nav_mission_stop();
+    break;
+  }
+}
 
 // ==========================================
 // Main Task

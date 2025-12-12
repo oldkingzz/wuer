@@ -28,8 +28,10 @@
 
 // Measurement Noise (How much we trust Vive)
 // R matrix diagonal elements
-#define R_X 0.5f // Vive X noise variance (inches^2)
-#define R_Y 0.5f // Vive Y noise variance (inches^2)
+// Increased R_X/R_Y to 2.0 (was 0.5) to filter out Vive position jitter at
+// edges
+#define R_X 2.0f
+#define R_Y 2.0f
 #define R_THETA                                                                \
   1.5f // LESS TRUST in Vive Heading (was 0.1). High value masks jumps.
 
