@@ -149,8 +149,10 @@ uint16_t tof_get_left_front_distance(void);
 uint16_t tof_get_left_rear_distance(void);
 
 // 兼容旧代码的函数别名
-#define tof_get_left_distance()  tof_get_left_front_distance()
-#define tof_get_right_distance() tof_get_front_distance()
+// 当前实际物理布局：SD1 = 前方 ToF，SD2 = 右侧 ToF
+// 为了让旧代码里 "right" 读到右侧传感器，这里把 right 映射到 left_front 通道
+#define tof_get_left_distance()  tof_get_front_distance()
+#define tof_get_right_distance() tof_get_left_front_distance()
 
 /**
  * @brief Start asynchronous ToF reading task

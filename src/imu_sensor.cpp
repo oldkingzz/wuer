@@ -9,6 +9,7 @@
 #include <Adafruit_Sensor.h>
 #include "include/imu_sensor.h"
 #include "include/gpio_config.h"
+#include "include/i2c_bus.h"
 #include "esp_log.h"
 
 static const char *TAG = "IMU_SENSOR";
@@ -347,6 +348,9 @@ esp_err_t imu_read(imu_data_t *data)
         return ESP_FAIL;
     }
 
+    // 独占 I2C/TCA 总线，避免与ToF任务抢总线
+    i2c_bus_lock();
+
     if (use_manual_mode) {
         // Manual register reading mode
 #if USE_TCA9548A
@@ -400,6 +404,8 @@ esp_err_t imu_read(imu_data_t *data)
 
     // Update global data
     g_imu_data = *data;
+
+    i2c_bus_unlock();
 
     xSemaphoreGive(imu_mutex);
     return ESP_OK;

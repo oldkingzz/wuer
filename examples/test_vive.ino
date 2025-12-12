@@ -20,8 +20,8 @@
 #include <Arduino.h>
 
 // Vive sensor pins
-#define VIVE1_SIGNAL_GPIO 34
-#define VIVE2_SIGNAL_GPIO 35
+#define VIVE1_SIGNAL_GPIO 42
+#define VIVE2_SIGNAL_GPIO 16
 
 // Include Vive510 library
 #include "src/include/vive510.h"

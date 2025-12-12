@@ -59,6 +59,21 @@ esp_err_t vive_read(vive_sensor_id_t sensor_id, vive_data_t *data);
 esp_err_t vive_read_all(vive_data_t *sensor1_data, vive_data_t *sensor2_data);
 
 /**
+ * @brief Start asynchronous Vive reading task
+ *
+ * 在后台以固定频率读取两个Vive传感器，并更新内部缓存数据。
+ * 其他模块（导航、状态监控）应优先使用缓存接口而不是直接调用 vive_read_all()。
+ *
+ * @return ESP_OK on success, ESP_FAIL on failure
+ */
+esp_err_t vive_start_async_reading(void);
+
+/**
+ * @brief Stop asynchronous Vive reading task
+ */
+void vive_stop_async_reading(void);
+
+/**
  * @brief Get X coordinate from sensor 1
  * 
  * @return X coordinate (0-8191), or 0 if invalid
@@ -99,6 +114,20 @@ bool vive_sensor1_is_valid(void);
  * @return true if receiving, false otherwise
  */
 bool vive_sensor2_is_valid(void);
+
+/**
+ * @brief Get latest cached data for a specific Vive sensor (non-blocking)
+ *
+ * 从后台任务更新的缓存中读取最新的一帧数据，不会再次访问硬件。
+ */
+esp_err_t vive_get_latest(vive_sensor_id_t sensor_id, vive_data_t *data);
+
+/**
+ * @brief Get latest cached data for both Vive sensors (non-blocking)
+ *
+ * 从缓存中一次性拷贝两个Vive传感器的数据，供导航等模块使用。
+ */
+esp_err_t vive_get_latest_all(vive_data_t *sensor1_data, vive_data_t *sensor2_data);
 
 #ifdef __cplusplus
 }

@@ -13,9 +13,10 @@ FIELD_WIDTH = 60    # inches (X方向)
 FIELD_LENGTH = 144  # inches (Y方向)
 
 # ========== 车辆参数 ==========
-ROBOT_RADIUS = 5.0  # inches (碰撞半径)
+# 实际整车直径约 11"，几何碰撞半径取 5.5"
+ROBOT_RADIUS = 5.5  # inches (碰撞半径)
 SAFE_MARGIN = 3.0   # inches (安全余量)
-WALL_CLEARANCE = ROBOT_RADIUS + SAFE_MARGIN  # 车中心距墙壁距离 = 8"
+WALL_CLEARANCE = ROBOT_RADIUS + SAFE_MARGIN  # 车中心距墙壁距离 ≈ 8.5"
 
 # ToF传感器位置（相对车中心）
 TOF_SIDE_OFFSET = 5.0   # 侧面ToF距车中心距离（左侧）
@@ -55,10 +56,10 @@ obstacles.append(patches.Rectangle((0, 90.0), 19, 37.9, linewidth=1, edgecolor='
 # 右下角: (60, 0)
 
 # 基地安全距离计算
-# 南侧基地: Y:[0,5], 车半径5", 所以车中心Y >= 10"
-# 北侧基地: Y:[139,144], 车半径5", 所以车中心Y <= 134"
-SOUTH_NEXUS_SAFE_Y = 10  # 南侧基地上方安全Y坐标
-NORTH_NEXUS_SAFE_Y = 134  # 北侧基地下方安全Y坐标
+# 南侧基地: Y:[0,5]，车半径≈5.5"，所以车中心Y >= 5 + ROBOT_RADIUS ≈ 10.5"
+# 北侧基地: Y:[139,144]，车半径≈5.5"，所以车中心Y <= 139 - ROBOT_RADIUS ≈ 133.5"
+SOUTH_NEXUS_SAFE_Y = 5 + ROBOT_RADIUS   # 南侧基地上方安全Y坐标
+NORTH_NEXUS_SAFE_Y = 139 - ROBOT_RADIUS # 北侧基地下方安全Y坐标
 
 waypoints = [
     # ========== 第1段：起点（左下角附近） ==========
@@ -84,7 +85,7 @@ waypoints = [
 
     # 绕过北侧基地（向下绕行，确保安全）
     # 基地范围: X:[26,34], Y:[139,144]
-    # 车中心必须 Y <= 134 (139 - 5)
+    # 车中心必须 Y <= NORTH_NEXUS_SAFE_Y = 139 - ROBOT_RADIUS
     (21, FIELD_LENGTH - WALL_CLEARANCE),      # 接近基地左侧（远离基地）
     (21, NORTH_NEXUS_SAFE_Y),                 # 向下到安全Y坐标
     (26, NORTH_NEXUS_SAFE_Y),                 # 基地左边缘
@@ -123,7 +124,7 @@ waypoints = [
 
     # 绕过南侧基地（向上绕行，确保安全）
     # 基地范围: X:[26,34], Y:[0,5]
-    # 车中心必须 Y >= 10 (5 + 5)
+    # 车中心必须 Y >= SOUTH_NEXUS_SAFE_Y = 5 + ROBOT_RADIUS
     (39, WALL_CLEARANCE),                     # 接近基地右侧（远离基地）
     (39, SOUTH_NEXUS_SAFE_Y),                 # 向上到安全Y坐标
     (34, SOUTH_NEXUS_SAFE_Y),                 # 基地右边缘
@@ -163,9 +164,29 @@ ax.plot(path_x, path_y, 'g-', linewidth=2, label='Path (Robot Center)', zorder=5
 # 绘制路径点
 ax.plot(path_x, path_y, 'go', markersize=4, zorder=6)
 
-# 标注起点和终点
-ax.plot(waypoints[0][0], waypoints[0][1], 'r*', markersize=20, label='Start', zorder=7)
-ax.plot(waypoints[-1][0], waypoints[-1][1], 'b*', markersize=20, label='End', zorder=7)
+# 标注设计起点（左下区域）和终点
+ax.plot(waypoints[0][0], waypoints[0][1], 'r*', markersize=18, label='Design Start', zorder=7)
+ax.plot(waypoints[-1][0], waypoints[-1][1], 'b*', markersize=18, label='End', zorder=7)
+
+# ========= 标注运行时实际起点（根据 ToF 初始定位，右上角内圈） =========
+# 在 C 代码中，calc_init_pos() 假设机器人在右上角，前/右 ToF 贴墙，
+# 然后 find_closest_waypoint() 会选离 (FIELD_WIDTH - WALL_CLEARANCE,
+# FIELD_LENGTH - WALL_CLEARANCE) 最近的路径点作为 g_start_wp_idx。
+runtime_start = (FIELD_WIDTH - WALL_CLEARANCE, FIELD_LENGTH - WALL_CLEARANCE)
+runtime_start_idx = None
+for i, (x, y) in enumerate(waypoints):
+    if abs(x - runtime_start[0]) < 1e-3 and abs(y - runtime_start[1]) < 1e-3:
+        runtime_start_idx = i
+        break
+
+if runtime_start_idx is not None:
+    sx, sy = waypoints[runtime_start_idx]
+    ax.plot(sx, sy, 'ms', markersize=16, label='Runtime Start (ToF Init)', zorder=8)
+    ax.annotate('Runtime Start\n(ToF + IMU)',
+                xy=(sx, sy), xytext=(sx - 15, sy - 10),
+                textcoords='data', fontsize=10,
+                arrowprops=dict(arrowstyle='->', color='magenta'),
+                bbox=dict(boxstyle='round', facecolor='lavender', alpha=0.8))
 
 # ========== 绘制所有路径点的碰撞圆（检查碰撞） ==========
 # 每隔2个点画一个圆，避免太密集
@@ -194,7 +215,8 @@ ax.set_ylim(-8, FIELD_LENGTH + 8)
 ax.set_aspect('equal')
 ax.set_xlabel('X (inches)', fontsize=14)
 ax.set_ylabel('Y (inches)', fontsize=14)
-ax.set_title('Wall-Following Path on ROBA 2025 Field\nRobot Center 8" from Wall, Collision Radius 5"', fontsize=16, fontweight='bold')
+ax.set_title('Wall-Following Path on ROBA 2025 Field\nRobot Center ~8.5" from Wall, Collision Radius 5.5"',
+             fontsize=16, fontweight='bold')
 ax.grid(True, alpha=0.3, linestyle='--')
 ax.legend(loc='upper right', fontsize=12)
 

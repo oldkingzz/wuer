@@ -34,6 +34,10 @@ static uint16_t vive2_y_buf[3] = {0, 0, 0};
 // Mutex for thread safety
 static SemaphoreHandle_t vive_mutex = NULL;
 
+// Async reading task handle
+static TaskHandle_t vive_async_task_handle = NULL;
+static bool vive_async_running = false;
+
 /**
  * @brief 3-point median filter
  */
@@ -216,6 +220,106 @@ esp_err_t vive_read_all(vive_data_t *sensor1_data, vive_data_t *sensor2_data)
 }
 
 /**
+ * @brief Async Vive reading task
+ *
+ * Periodically reads both Vive sensors (50 Hz) and updates the cached
+ * g_vive1_data / g_vive2_data structures. Other modules should use the
+ * cached getters (vive_get_sensor*_*, vive_get_latest*_*) instead of
+ * calling vive_read/vive_read_all directly when async mode is enabled.
+ */
+static void vive_async_reading_task(void *pvParameters)
+{
+    ESP_LOGI(TAG, "Vive async reading task started");
+
+    // 注意：这里只有一个任务在周期性读取 Vive 传感器，而底层驱动在
+    // sensor->sync(5) 中会执行一段时间的忙等 + yield()。在**完全没有
+    // Vive 信号**的情况下，这段忙等可能持续几十毫秒，并且不会调用
+    // vTaskDelay()，如果我们这里再用 vTaskDelayUntil()，当周期被严重
+    // 拉长时就会变成“几乎 0 延时的紧密循环”，导致 IDLE0 长时间得不到
+    // 运行机会，从而触发 task_wdt。
+    //
+    // 为了保证无论底层 sync() 多慢，这个任务在每次循环结束都至少挂起
+    // 一小段时间，这里改为简单的 vTaskDelay(period)。这样可以保证 IDLE
+    // 任务定期运行，避免在“无 Vive 硬件/无信号”的场景下触发看门狗。
+
+    const TickType_t period = pdMS_TO_TICKS(20); // 目标约 50Hz
+
+    vive_data_t d1, d2;
+
+    while (vive_async_running) {
+        // Read both sensors and update cached data; navigation and web use cached getters
+        vive_read_all(&d1, &d2);
+
+        // 无论本次读取花了多久，都至少休息 period，避免长时间占满 CPU0
+        vTaskDelay(period);
+    }
+
+    ESP_LOGI(TAG, "Vive async reading task stopped");
+    vive_async_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+esp_err_t vive_start_async_reading(void)
+{
+    if (vive_async_running) {
+        ESP_LOGW(TAG, "Vive async task already running");
+        return ESP_OK;
+    }
+
+    if (vive_mutex == NULL) {
+        ESP_LOGE(TAG, "Vive mutex not created (call vive_init first)");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    vive_async_running = true;
+
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        vive_async_reading_task,
+        "vive_async",
+        3072,
+        NULL,
+        3,
+        &vive_async_task_handle,
+        0   // Core 0, same as other sensor tasks
+    );
+
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create Vive async task");
+        vive_async_running = false;
+        vive_async_task_handle = NULL;
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Vive async reading task created");
+    return ESP_OK;
+}
+
+void vive_stop_async_reading(void)
+{
+    if (!vive_async_running) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Stopping Vive async reading task...");
+    vive_async_running = false;
+
+    // Wait for task to cleanly exit (up to 1s)
+    uint32_t timeout = 1000;
+    while (vive_async_task_handle != NULL && timeout > 0) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        timeout -= 10;
+    }
+
+    if (vive_async_task_handle != NULL) {
+        ESP_LOGW(TAG, "Force deleting Vive async task");
+        vTaskDelete(vive_async_task_handle);
+        vive_async_task_handle = NULL;
+    }
+
+    ESP_LOGI(TAG, "Vive async reading task fully stopped");
+}
+
+/**
  * @brief Get X coordinate from sensor 1
  */
 uint16_t vive_get_sensor1_x(void)
@@ -261,6 +365,50 @@ bool vive_sensor1_is_valid(void)
 bool vive_sensor2_is_valid(void)
 {
     return g_vive2_data.valid;
+}
+
+esp_err_t vive_get_latest(vive_sensor_id_t sensor_id, vive_data_t *data)
+{
+    if (data == NULL) return ESP_FAIL;
+    if (vive_mutex == NULL) return ESP_FAIL;
+
+    if (xSemaphoreTake(vive_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        return ESP_FAIL;
+    }
+
+    switch (sensor_id) {
+        case VIVE_SENSOR_1:
+            *data = g_vive1_data;
+            break;
+        case VIVE_SENSOR_2:
+            *data = g_vive2_data;
+            break;
+        default:
+            xSemaphoreGive(vive_mutex);
+            return ESP_FAIL;
+    }
+
+    xSemaphoreGive(vive_mutex);
+    return ESP_OK;
+}
+
+esp_err_t vive_get_latest_all(vive_data_t *sensor1_data, vive_data_t *sensor2_data)
+{
+    if (vive_mutex == NULL) return ESP_FAIL;
+
+    if (xSemaphoreTake(vive_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        return ESP_FAIL;
+    }
+
+    if (sensor1_data != NULL) {
+        *sensor1_data = g_vive1_data;
+    }
+    if (sensor2_data != NULL) {
+        *sensor2_data = g_vive2_data;
+    }
+
+    xSemaphoreGive(vive_mutex);
+    return ESP_OK;
 }
 
 

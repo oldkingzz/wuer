@@ -8,6 +8,7 @@
 #include "Adafruit_VL53L0X.h"
 #include "include/tof_sensor.h"
 #include "include/gpio_config.h"
+#include "include/i2c_bus.h"
 #include "esp_log.h"
 
 static const char *TAG = "TOF_SENSOR";
@@ -308,6 +309,11 @@ esp_err_t tof_read(tof_position_t position, tof_data_t *data)
         return ESP_FAIL;
     }
 
+    // Select channel and read (protect shared I2C/TCA bus)
+#if USE_TCA9548A
+    i2c_bus_lock();
+#endif
+
     // Select channel and read
 #if USE_TCA9548A
     tca_select(channel);
@@ -362,6 +368,11 @@ esp_err_t tof_read(tof_position_t position, tof_data_t *data)
     }
 
     xSemaphoreGive(tof_mutex);
+
+#if USE_TCA9548A
+    i2c_bus_unlock();
+#endif
+
     return ESP_OK;
 }
 
@@ -371,29 +382,32 @@ esp_err_t tof_read(tof_position_t position, tof_data_t *data)
 esp_err_t tof_read_all(tof_data_t *top_data, tof_data_t *front_data,
                        tof_data_t *left_front_data, tof_data_t *left_rear_data)
 {
-    esp_err_t ret;
+	    // 目前硬件只有两个 ToF：SD1(Front)、SD2(Left-Front)
+	    // 这里只实际读取这两个，其他通道保持原状态
 
-    ret = tof_read(TOF_TOP, top_data);
-    if (ret == ESP_OK) {
-        g_top_data = *top_data;
-    }
+	    if (tof_front_initialized && front_data) {
+	        esp_err_t ret = tof_read(TOF_FRONT, front_data);
+	        if (ret == ESP_OK) {
+	            g_front_data = *front_data;
+	        }
+	    }
 
-    ret = tof_read(TOF_FRONT, front_data);
-    if (ret == ESP_OK) {
-        g_front_data = *front_data;
-    }
+	    if (tof_left_front_initialized && left_front_data) {
+	        esp_err_t ret = tof_read(TOF_LEFT_FRONT, left_front_data);
+	        if (ret == ESP_OK) {
+	            g_left_front_data = *left_front_data;
+	        }
+	    }
 
-    ret = tof_read(TOF_LEFT_FRONT, left_front_data);
-    if (ret == ESP_OK) {
-        g_left_front_data = *left_front_data;
-    }
+	    // top_data / left_rear_data 若非空，直接返回当前缓存（一般为无效）
+	    if (top_data) {
+	        *top_data = g_top_data;
+	    }
+	    if (left_rear_data) {
+	        *left_rear_data = g_left_rear_data;
+	    }
 
-    ret = tof_read(TOF_LEFT_REAR, left_rear_data);
-    if (ret == ESP_OK) {
-        g_left_rear_data = *left_rear_data;
-    }
-
-    return ESP_OK;
+	    return ESP_OK;
 }
 
 /**

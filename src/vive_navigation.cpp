@@ -1,453 +1,403 @@
 /**
  * @file vive_navigation.cpp
- * @brief A* Path Planning Navigation System Implementation
+ * @brief Navigation System V2 - Comprehensive Implementation
+ *
+ * Features:
+ * 1. EKF Localization (Encoder + Vive)
+ * 2. A* Path Planning (using grid_map)
+ * 3. Pure Pursuit Motion Control (Constant Speed)
+ * 4. State Machine for Missions
  */
 
 #include "include/vive_navigation.h"
-#include "include/vive_sensor.h"
-#include "include/chassis.h"
-#include "include/astar.h"
-#include "include/grid_map.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/semphr.h"
+#include "include/astar.h"      // Path Planning
+#include "include/chassis_v2.h" // UPDATED: Use V2
+#include "include/grid_map.h"
+#include "include/localization_ekf.h" // EKF Module
+#include "include/nav_config.h"
+#include "include/nav_mission.h" // Mission Control
+#include "include/vive_sensor.h"
 #include <math.h>
 
-static const char *TAG = "VIVE_NAV";
+static const char *TAG = "NAV";
 
-// Navigation state variables
-static nav_state_t g_nav_state = NAV_STATE_IDLE;
-static vive_point_t g_target_vive = {0, 0};
-static map_point_t g_target_map = {0, 0};
+// ==========================================
+// Constants & Tunings
+// ==========================================
+#define NAV_LOOKAHEAD_DIST_INCH 10.0f // Pure Pursuit Lookahead
+#define NAV_GOAL_TOLERANCE_INCH 2.0f  // Stop when closer than this
+#define NAV_YAW_Align_TOLERANCE 0.1f  // ~5.7 degrees
+
+// USE CONSTANT VELOCITY FROM V2 MACROS
+// 用户要求降低线速度到 0.1 以保证安全
+#define NAV_CONST_LINEAR_SPEED 0.10f // Reduced from 0.5
+
+#define NAV_TURN_SPEED 1.5f // rad/s
+
+#define PID_KP_YAW 0.6f // Reduced gain for smoother turning (was 1.0)
+
+// ==========================================
+// Global State
+// ==========================================
 static vive_pose_t g_current_pose = {0, 0, 0.0f, false};
-static map_point_t g_current_map_pos = {0, 0};
-static bool g_target_set = false;
-static bool g_nav_initialized = false;
+static bool g_has_first_fix = false;
 
-// Path planning
-static path_t g_current_path;
-static uint16_t g_current_waypoint_index = 0;
+// Navigation State
+static nav_status_t g_nav_status = {.state = NAV_STATE_IDLE};
+static path_t g_current_path = {0}; // Store the planned path
 
-// Mutex
-static SemaphoreHandle_t g_nav_mutex = NULL;
+// Chassis Odometry History for EKF Delta
+static float last_dist_left = 0.0f;
+static float last_dist_right = 0.0f;
 
-// Navigation task handle
-static TaskHandle_t g_nav_task_handle = NULL;
+// ==========================================
+// Helper Functions
+// ==========================================
 
-// Math constants
-#define PI 3.14159265359f
-#define DEG_TO_RAD(deg) ((deg) * PI / 180.0f)
-#define RAD_TO_DEG(rad) ((rad) * 180.0f / PI)
-
-static float calculate_distance_pixels(int16_t x1, int16_t y1, int16_t x2, int16_t y2)
-{
-    float dx = (float)(x2 - x1);
-    float dy = (float)(y2 - y1);
-    return sqrtf(dx * dx + dy * dy);
+// Normalize angle to -PI ~ PI
+static float normalize_angle(float angle) {
+  while (angle > M_PI)
+    angle -= 2.0f * M_PI;
+  while (angle < -M_PI)
+    angle += 2.0f * M_PI;
+  return angle;
 }
 
-static float calculate_angle_pixels(int16_t x1, int16_t y1, int16_t x2, int16_t y2)
-{
-    float dx = (float)(x2 - x1);
-    float dy = (float)(y2 - y1);
-    float angle_rad = atan2f(dy, dx);
-    float angle_deg = RAD_TO_DEG(angle_rad);
-    if (angle_deg < 0) angle_deg += 360.0f;
-    return angle_deg;
+// Stop Chassis Wrapper
+static void stop_chassis() { chassis_v2_stop(); }
+
+// ==========================================
+// Localization Loop (Run every 20ms)
+// ==========================================
+#include <Arduino.h>
+
+// ==========================================
+// Localization Loop (Run every 20ms)
+// ==========================================
+static void update_localization_step(float dt) {
+  // 1. Update Chassis Odometry (V2)
+  chassis_v2_update_odometry(dt);
+
+  // 2. Get current Chassis Odom
+  float cur_left_m, cur_right_m;
+  chassis_v2_get_wheel_dist_m(&cur_left_m, &cur_right_m);
+
+  float d_left_m = cur_left_m - last_dist_left;
+  float d_right_m = cur_right_m - last_dist_right;
+
+  last_dist_left = cur_left_m;
+  last_dist_right = cur_right_m;
+
+  ekf_predict(d_left_m * 39.37f, d_right_m * 39.37f);
+
+  // 4. Vive Update
+  vive_data_t v1 = {0}, v2 = {0};
+  float cx = 0, cy = 0;
+  bool valid_signal = false;
+
+  if (vive_get_latest_all(&v1, &v2) == ESP_OK) {
+    if (v1.valid && v2.valid) {
+      int16_t x1, y1, x2, y2;
+      grid_map_vive_to_pixel(v1.x, v1.y, &x1, &y1);
+      grid_map_vive_to_pixel(v2.x, v2.y, &x2, &y2);
+
+      cx = (x1 + x2) / 2.0f;
+      cy = (y1 + y2) / 2.0f;
+
+      // Reverted Swap: Coordinate system was correct originally.
+
+      // Fix: User confirmed "Facing -X (180), behavior is -Y (-90)".
+      // Current logic (atan2 + PI) produces 180 when Real is -90.
+      // Gap is -270 deg (+90).
+      // We need to shift log by -270.
+      // New = (atan2 + PI) - 3PI/2 = atan2 - PI/2.
+      float heading_rad = atan2f(y2 - y1, x2 - x1);
+      heading_rad -= M_PI / 2.0f;
+
+      if (!g_has_first_fix) {
+        Serial.printf("NAV: First Fix! Map:(%.1f, %.1f)\n", cx, cy);
+        ekf_init(cx, cy, heading_rad);
+        g_has_first_fix = true;
+      } else {
+        ekf_update_vive(cx, cy, heading_rad);
+      }
+      valid_signal = true;
+    }
+  }
+
+  // 5. Publish
+  robot_pose_t p = ekf_get_pose();
+  g_current_pose.x = (uint16_t)p.x;
+  g_current_pose.y = (uint16_t)p.y;
+  g_current_pose.heading = p.theta * 180.0f / M_PI;
+  g_current_pose.valid = g_has_first_fix;
+
+  // No 0-360 conversion, keep -180 to 180
+  // User requested -180 to 180 range. Removing 0-360 conversion.
+  // if (g_current_pose.heading < 0)
+  //   g_current_pose.heading += 360.0f;
+
+  // Update nav_status for Web API
+  g_nav_status.current_map_pos.x = g_current_pose.x;
+  g_nav_status.current_map_pos.y = g_current_pose.y;
+
+  // Debug Print (Every 1 second approx)
+  static int debug_cnt = 0;
+  if (++debug_cnt > 50) {
+    debug_cnt = 0;
+    // Fix: Show Heading in degrees for user verification
+    float heading_deg = g_current_pose.heading;
+    Serial.printf("NAV_LOG: V1(%d,%d) V2(%d,%d) Map(%.1f, %.1f) EKF(%.1f, "
+                  "%.1f) CurH:%.1f deg Valid:%d\n",
+                  v1.x, v1.y, v2.x, v2.y, cx, cy, p.x, p.y, heading_deg,
+                  valid_signal);
+  }
 }
 
-static float angle_difference(float target_angle, float current_angle)
-{
-    float diff = target_angle - current_angle;
-    while (diff > 180.0f) diff -= 360.0f;
-    while (diff < -180.0f) diff += 360.0f;
-    return diff;
+// ==========================================
+// Motion Control Loop (Run every 20ms if NAVIGATING)
+// ==========================================
+static void update_motion_control_step(void) {
+  if (g_nav_status.state != NAV_STATE_NAVIGATING)
+    return;
+  if (!g_current_pose.valid) {
+    stop_chassis(); // Safety
+    return;
+  }
+
+  robot_pose_t pose = ekf_get_pose();
+
+  // 1. Check if reached Final Goal
+  float dx_finish = (float)g_nav_status.target_map_pos.x - pose.x;
+  float dy_finish = (float)g_nav_status.target_map_pos.y - pose.y;
+  float dist_finish = sqrtf(dx_finish * dx_finish + dy_finish * dy_finish);
+
+  if (dist_finish < NAV_GOAL_TOLERANCE_INCH) {
+    ESP_LOGI(TAG, "Goal Reached! dist=%.1f", dist_finish);
+    stop_chassis();
+    g_nav_status.state = NAV_STATE_ARRIVED;
+    return;
+  }
+
+  // 2. Pure Pursuit: Find Lookahead Point
+  int16_t target_x, target_y;
+  if (astar_get_next_target(&g_current_path, (int16_t)pose.x, (int16_t)pose.y,
+                            NAV_LOOKAHEAD_DIST_INCH, &target_x,
+                            &target_y) != ESP_OK) {
+    // Fallback: aim at final goal
+    target_x = g_nav_status.target_map_pos.x;
+    target_y = g_nav_status.target_map_pos.y;
+  }
+
+  // 3. Compute Control Command
+  float dx = (float)target_x - pose.x;
+  float dy = (float)target_y - pose.y;
+  float target_heading = atan2f(dy, dx);
+  float heading_err = normalize_angle(target_heading - pose.theta);
+
+  float linear_cmd = 0.0f;
+  float angular_cmd = 0.0f;
+
+  // A. Turn in Place if error is large (>45 deg) - increased from 30 to reduce
+  // oscillation
+  // Smooth Control: Scale linear speed based on heading error
+  // (Turn-while-driving)
+  angular_cmd = heading_err * PID_KP_YAW;
+
+  // Clamp Angular Speed (Safety)
+  if (angular_cmd > NAV_TURN_SPEED)
+    angular_cmd = NAV_TURN_SPEED;
+  if (angular_cmd < -NAV_TURN_SPEED)
+    angular_cmd = -NAV_TURN_SPEED;
+
+  // Linear Speed Scaling:
+  // 1. If error is small, drive fast.
+  // 2. If error is large (> 60 deg), stop and turn in place.
+  // 3. In between, scale speed by cos(err).
+
+  // Linear Speed Scaling:
+  // ALWAYS move. Don't stop.
+  // Scale speed by cos(err) to slow down in tight turns, but never 0.
+  // Unless error > 90 (wrong way), then we naturally slow down or stop via
+  // cos().
+
+  float scale = cosf(heading_err);
+  // Ensure we don't go backwards if error > 90
+  if (scale < 0)
+    scale = 0;
+
+  // Minimal speed to prevent getting stuck if scaling is too aggressive?
+  // User wants "Flow". Let's just use the cosine scale.
+  linear_cmd = NAV_CONST_LINEAR_SPEED * scale;
+
+  // Debug Print
+  static int motion_log_timer = 0;
+  if (++motion_log_timer >= 10) { // Every 200ms
+    float cur_heading_deg = pose.theta * 180.0f / M_PI;
+    float tgt_heading_deg = target_heading * 180.0f / M_PI;
+    float err_deg = heading_err * 180.0f / M_PI;
+
+    // User requested explicit Heading Debugging
+    Serial.printf(
+        "NAV_MOTION: St=%d Pos(%.1f,%.1f) TgtPos(%.1f,%.1f) | HEADINGS: "
+        "Cur=%.1f Tgt=%.1f Err=%.1f | Cmd(L=%.2f, A=%.2f)\n",
+        g_nav_status.state, pose.x, pose.y, (float)target_x, (float)target_y,
+        cur_heading_deg, tgt_heading_deg, err_deg, linear_cmd, angular_cmd);
+    motion_log_timer = 0;
+  }
+
+  // 4. Send to Chassis V2
+  chassis_v2_set_velocity(linear_cmd, angular_cmd);
 }
 
-static esp_err_t update_robot_pose(void)
-{
-    vive_data_t vive1, vive2;
-    vive_read_all(&vive1, &vive2);
+// ==========================================
+// Main Task
+// ==========================================
+static void navigation_update_task(void *pvParameters) {
+  TickType_t last_wake = xTaskGetTickCount();
+  const TickType_t period = pdMS_TO_TICKS(20);
 
-    if (!vive1.valid || !vive2.valid) {
-        g_current_pose.valid = false;
-        return ESP_ERR_INVALID_STATE;
+  int print_timer = 0;
+  ESP_LOGI(TAG, "Nav Task Started (Loc+Motion)");
+
+  while (1) {
+    // 1. Localization
+    update_localization_step(0.02f);
+
+    // 2. Motion Control
+    update_motion_control_step();
+
+    // 3. Debug Print
+    if (++print_timer >= 50) {
+      robot_pose_t p = ekf_get_pose();
+      ESP_LOGI(TAG, "State:%d P:%.1f,%.1f T:%.1f", g_nav_status.state, p.x, p.y,
+               p.theta * 180.0f / M_PI);
+      print_timer = 0;
     }
 
-    g_current_pose.x = (vive1.x + vive2.x) / 2;
-    g_current_pose.y = (vive1.y + vive2.y) / 2;
+    vTaskDelayUntil(&last_wake, period);
+  }
+}
 
-    float dx = (float)((int32_t)vive2.x - (int32_t)vive1.x);
-    float dy = (float)((int32_t)vive2.y - (int32_t)vive1.y);
-    float angle_rad = atan2f(dy, dx);
-    g_current_pose.heading = RAD_TO_DEG(angle_rad);
-    if (g_current_pose.heading < 0) g_current_pose.heading += 360.0f;
-    g_current_pose.valid = true;
+// ==========================================
+// API Implementation
+// ==========================================
 
-    grid_map_vive_to_pixel(g_current_pose.x, g_current_pose.y,
-                          &g_current_map_pos.x, &g_current_map_pos.y);
+esp_err_t vive_nav_init(void) {
+  ESP_LOGI(TAG, "Init...");
+  grid_map_init();
+  grid_map_calibrate_affine(g_nav_calib_points, NAV_CALIB_POINT_COUNT);
+  astar_init(); // Init A* Memory
+
+  // Chassis V2 Init is done in wuer.ino, but we can reset odom here
+  chassis_v2_reset_odometry();
+
+  ekf_init(0, 0, 0);
+  g_nav_status.state = NAV_STATE_IDLE; // Init State
+
+  // Init Subsystems
+  nav_mission_init();
+
+  xTaskCreatePinnedToCore(navigation_update_task, "nav_upd", 4096, NULL, 5,
+                          NULL, 1);
+  return ESP_OK;
+}
+
+// ---------------------------------------------------------
+// Set Target MAP (Trigger A* Planning)  <-- Main Logic Here
+// ---------------------------------------------------------
+esp_err_t vive_nav_set_target_map(int16_t map_x, int16_t map_y) {
+  Serial.printf("NAV: Set Target Map: (%d, %d)\n", map_x, map_y);
+  ESP_LOGI(TAG, "Set Target Map: (%d, %d)", map_x, map_y);
+
+  if (!g_has_first_fix) {
+    Serial.printf("NAV ERROR: No Localization Fix yet!\n");
+    ESP_LOGE(TAG, "Ignored: No Localization Fix yet");
+    return ESP_FAIL;
+  }
+
+  robot_pose_t start = ekf_get_pose();
+  Serial.printf("NAV: Start pose: (%.1f, %.1f)\n", start.x, start.y);
+
+  // 1. Plan Path
+  esp_err_t ret = astar_plan_path((int16_t)start.x, (int16_t)start.y, map_x,
+                                  map_y, &g_current_path);
+
+  if (ret != ESP_OK) {
+    Serial.printf("NAV ERROR: A* Plan Failed!\n");
+    ESP_LOGE(TAG, "A* Plan Failed!");
+    g_nav_status.state = NAV_STATE_ERROR;
+    return ESP_FAIL;
+  }
+
+  // 2. Smooth Path
+  astar_simplify_path(&g_current_path);
+
+  // 3. Update Status
+  g_nav_status.target_map_pos.x = map_x;
+  g_nav_status.target_map_pos.y = map_y;
+  g_nav_status.state = NAV_STATE_NAVIGATING; // Start Moving!
+  g_nav_status.path_length = g_current_path.length;
+
+  Serial.printf("NAV: Path Planned! Length: %d. Moving...\n",
+                g_current_path.length);
+  ESP_LOGI(TAG, "Path Planned! Length: %d. Moving...", g_current_path.length);
+  return ESP_OK;
+}
+
+// Wrapper for Vive coordinates
+esp_err_t vive_nav_set_target(uint16_t target_x, uint16_t target_y) {
+  int16_t map_x, map_y;
+  grid_map_vive_to_pixel(target_x, target_y, &map_x, &map_y);
+  return vive_nav_set_target_map(map_x, map_y);
+}
+
+// Helper to set target by ID
+esp_err_t vive_nav_set_target_goal(nav_goal_id_t goal_id) {
+  if (goal_id >= NAV_GOAL_COUNT)
+    return ESP_FAIL;
+  nav_goal_t goal = g_nav_goals[goal_id];
+  return vive_nav_set_target_map(goal.map_x, goal.map_y);
+}
+
+// ---------------------------------------------------------
+// Other Controls
+// ---------------------------------------------------------
+
+esp_err_t vive_nav_start(void) {
+  if (g_current_path.valid && g_current_path.length > 0) {
+    g_nav_status.state = NAV_STATE_NAVIGATING;
     return ESP_OK;
+  }
+  return ESP_FAIL;
 }
 
-static esp_err_t plan_path(void)
-{
-    ESP_LOGI(TAG, "Planning path from (%d,%d) to (%d,%d)",
-             g_current_map_pos.x, g_current_map_pos.y, g_target_map.x, g_target_map.y);
-
-    esp_err_t ret = astar_plan_path(g_current_map_pos.x, g_current_map_pos.y,
-                                    g_target_map.x, g_target_map.y, &g_current_path);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Path planning failed!");
-        return ESP_FAIL;
-    }
-
-    astar_simplify_path(&g_current_path);
-    ESP_LOGI(TAG, "Path planned: %d waypoints", g_current_path.length);
-    g_current_waypoint_index = 0;
-    return ESP_OK;
+esp_err_t vive_nav_stop(void) {
+  g_nav_status.state = NAV_STATE_IDLE;
+  stop_chassis();
+  return ESP_OK;
 }
 
-
-static void navigation_task(void *pvParameters)
-{
-    TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t task_period = pdMS_TO_TICKS(50);  // 20Hz
-
-    ESP_LOGI(TAG, "Navigation task started");
-
-    while (1) {
-        if (xSemaphoreTake(g_nav_mutex, portMAX_DELAY) == pdTRUE) {
-            update_robot_pose();
-
-            switch (g_nav_state) {
-                case NAV_STATE_IDLE:
-                    chassis_set_velocity(0.0f, 0.0f);
-                    break;
-
-                case NAV_STATE_PLANNING:
-                {
-                    ESP_LOGI(TAG, "Starting path planning...");
-                    UBaseType_t stack_high_water = uxTaskGetStackHighWaterMark(NULL);
-                    ESP_LOGI(TAG, "Stack free before planning: %u bytes", stack_high_water * 4);
-
-                    if (plan_path() == ESP_OK) {
-                        g_nav_state = NAV_STATE_NAVIGATING;
-                        ESP_LOGI(TAG, "Switched to NAVIGATING");
-                    } else {
-                        g_nav_state = NAV_STATE_ERROR;
-                        ESP_LOGE(TAG, "Planning failed");
-                    }
-
-                    stack_high_water = uxTaskGetStackHighWaterMark(NULL);
-                    ESP_LOGI(TAG, "Stack free after planning: %u bytes", stack_high_water * 4);
-                    break;
-                }
-
-                case NAV_STATE_NAVIGATING:
-                {
-                    if (!g_current_pose.valid) {
-                        chassis_set_velocity(0.0f, 0.0f);
-                        break;
-                    }
-
-                    float dist_to_goal = calculate_distance_pixels(
-                        g_current_map_pos.x, g_current_map_pos.y,
-                        g_target_map.x, g_target_map.y);
-
-                    if (dist_to_goal < NAV_ARRIVAL_THRESHOLD) {
-                        ESP_LOGI(TAG, "Arrived!");
-                        g_nav_state = NAV_STATE_ARRIVED;
-                        chassis_set_velocity(0.0f, 0.0f);
-                        break;
-                    }
-
-                    int16_t target_x, target_y;
-                    if (astar_get_next_target(&g_current_path,
-                                             g_current_map_pos.x, g_current_map_pos.y,
-                                             NAV_LOOKAHEAD_DISTANCE,
-                                             &target_x, &target_y) != ESP_OK) {
-                        chassis_set_velocity(0.0f, 0.0f);
-                        break;
-                    }
-
-                    float distance = calculate_distance_pixels(
-                        g_current_map_pos.x, g_current_map_pos.y, target_x, target_y);
-
-                    float target_heading = calculate_angle_pixels(
-                        g_current_map_pos.x, g_current_map_pos.y, target_x, target_y);
-
-                    float heading_error = angle_difference(target_heading, g_current_pose.heading);
-
-                    // 简单比例控制（不使用PID，因为PID需要速度反馈）
-                    // 距离越大，速度越快
-                    float linear_velocity = distance * NAV_DISTANCE_KP;
-                    // 角度误差越大，转向越快
-                    float angular_velocity = heading_error * NAV_HEADING_KP;
-
-                    if (linear_velocity > NAV_MAX_LINEAR_VELOCITY) linear_velocity = NAV_MAX_LINEAR_VELOCITY;
-                    if (linear_velocity < 0.0f) linear_velocity = 0.0f;
-                    if (angular_velocity > NAV_MAX_ANGULAR_VELOCITY) angular_velocity = NAV_MAX_ANGULAR_VELOCITY;
-                    if (angular_velocity < -NAV_MAX_ANGULAR_VELOCITY) angular_velocity = -NAV_MAX_ANGULAR_VELOCITY;
-
-                    chassis_set_velocity(linear_velocity, angular_velocity);
-
-                    static uint32_t replan_check_counter = 0;
-                    if (++replan_check_counter >= 40) {
-                        replan_check_counter = 0;
-                        float min_dist_to_path = 1e9f;
-                        for (uint16_t i = 0; i < g_current_path.length; i++) {
-                            float d = calculate_distance_pixels(
-                                g_current_map_pos.x, g_current_map_pos.y,
-                                g_current_path.waypoints[i].x, g_current_path.waypoints[i].y);
-                            if (d < min_dist_to_path) min_dist_to_path = d;
-                        }
-                        if (min_dist_to_path > NAV_REPLAN_THRESHOLD) {
-                            ESP_LOGW(TAG, "Replanning (dist=%.1f)", min_dist_to_path);
-                            g_nav_state = NAV_STATE_PLANNING;
-                        }
-                    }
-                    break;
-                }
-
-                case NAV_STATE_ARRIVED:
-                case NAV_STATE_ERROR:
-                    chassis_set_velocity(0.0f, 0.0f);
-                    break;
-            }
-
-            xSemaphoreGive(g_nav_mutex);
-        }
-        vTaskDelayUntil(&last_wake_time, task_period);
-    }
+esp_err_t vive_nav_get_status(nav_status_t *status) {
+  if (status)
+    *status = g_nav_status;
+  return ESP_OK;
 }
 
-esp_err_t vive_nav_init(void)
-{
-    if (g_nav_initialized) {
-        ESP_LOGW(TAG, "Already initialized");
-        return ESP_OK;
-    }
-
-    ESP_LOGI(TAG, "Initializing navigation...");
-    ESP_LOGI(TAG, "Step 1: Calling grid_map_init()...");
-
-    if (grid_map_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Grid map init failed");
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "Step 1: grid_map_init() completed");
-    ESP_LOGI(TAG, "Step 2: Calling astar_init()...");
-
-    if (astar_init() != ESP_OK) {
-        ESP_LOGE(TAG, "A* init failed");
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "Step 2: astar_init() completed");
-    ESP_LOGI(TAG, "Step 3: Creating navigation mutex...");
-
-    g_nav_mutex = xSemaphoreCreateMutex();
-    if (g_nav_mutex == NULL) {
-        ESP_LOGE(TAG, "Mutex creation failed");
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "Step 3: Mutex created");
-
-    // 不在初始化时创建任务，避免任务立即运行并调用vive_read_all()
-    // 任务将在第一次调用vive_nav_set_target()时创建
-    g_nav_task_handle = NULL;
-
-    g_nav_initialized = true;
-    ESP_LOGI(TAG, "Navigation initialized successfully (task will be created on first use)");
-    return ESP_OK;
+esp_err_t vive_nav_get_pose(vive_pose_t *pose) {
+  if (pose)
+    *pose = g_current_pose;
+  return ESP_OK;
 }
 
-
-esp_err_t vive_nav_set_target(uint16_t target_x, uint16_t target_y)
-{
-    if (!g_nav_initialized) {
-        ESP_LOGE(TAG, "Not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (xSemaphoreTake(g_nav_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        g_target_vive.x = target_x;
-        g_target_vive.y = target_y;
-
-        grid_map_vive_to_pixel(target_x, target_y, &g_target_map.x, &g_target_map.y);
-
-        ESP_LOGI(TAG, "Target set: Vive(%d,%d) -> Map(%d,%d)",
-                 target_x, target_y, g_target_map.x, g_target_map.y);
-
-        g_target_set = true;
-        xSemaphoreGive(g_nav_mutex);
-        return ESP_OK;
-    }
-
-    return ESP_FAIL;
+esp_err_t vive_nav_get_path(path_t *path) {
+  if (path)
+    *path = g_current_path;
+  return ESP_OK;
 }
 
-esp_err_t vive_nav_set_target_map(int16_t map_x, int16_t map_y)
-{
-    if (!g_nav_initialized) {
-        ESP_LOGE(TAG, "Not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (xSemaphoreTake(g_nav_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        g_target_map.x = map_x;
-        g_target_map.y = map_y;
-
-        grid_map_pixel_to_vive(map_x, map_y, &g_target_vive.x, &g_target_vive.y);
-
-        ESP_LOGI(TAG, "Target set: Map(%d,%d) -> Vive(%d,%d)",
-                 map_x, map_y, g_target_vive.x, g_target_vive.y);
-
-        g_target_set = true;
-        xSemaphoreGive(g_nav_mutex);
-        return ESP_OK;
-    }
-
-    return ESP_FAIL;
-}
-
-esp_err_t vive_nav_start(void)
-{
-    if (!g_nav_initialized) {
-        ESP_LOGE(TAG, "Not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (!g_target_set) {
-        ESP_LOGE(TAG, "No target set");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    // 如果任务还没创建，现在创建它
-    if (g_nav_task_handle == NULL) {
-        ESP_LOGI(TAG, "Creating navigation task...");
-        ESP_LOGI(TAG, "Free heap before task creation: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
-
-        // 栈大小设为6KB，应该足够（A*算法不使用递归）
-        BaseType_t ret = xTaskCreatePinnedToCore(
-            navigation_task, "nav_task", 6144, NULL, 5, &g_nav_task_handle, 1);
-
-        if (ret != pdPASS) {
-            ESP_LOGE(TAG, "Task creation failed");
-            return ESP_FAIL;
-        }
-        ESP_LOGI(TAG, "Navigation task created (stack: 6KB)");
-        ESP_LOGI(TAG, "Free heap after task creation: %u bytes", heap_caps_get_free_size(MALLOC_CAP_8BIT));
-    }
-
-    if (xSemaphoreTake(g_nav_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        g_nav_state = NAV_STATE_PLANNING;
-        ESP_LOGI(TAG, "Navigation started");
-        xSemaphoreGive(g_nav_mutex);
-        return ESP_OK;
-    }
-
-    return ESP_FAIL;
-}
-
-esp_err_t vive_nav_stop(void)
-{
-    if (!g_nav_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (xSemaphoreTake(g_nav_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        g_nav_state = NAV_STATE_IDLE;
-        chassis_set_velocity(0.0f, 0.0f);
-        ESP_LOGI(TAG, "Navigation stopped");
-        xSemaphoreGive(g_nav_mutex);
-        return ESP_OK;
-    }
-
-    return ESP_FAIL;
-}
-
-esp_err_t vive_nav_get_status(nav_status_t *status)
-{
-    if (!g_nav_initialized || status == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (xSemaphoreTake(g_nav_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        status->state = g_nav_state;
-        status->current_pose = g_current_pose;
-        status->target = g_target_vive;
-        status->current_map_pos = g_current_map_pos;
-        status->target_map_pos = g_target_map;
-        status->path_length = g_current_path.length;
-        status->current_waypoint = g_current_waypoint_index;
-
-        status->distance_to_target = calculate_distance_pixels(
-            g_current_map_pos.x, g_current_map_pos.y,
-            g_target_map.x, g_target_map.y);
-
-        float target_heading = calculate_angle_pixels(
-            g_current_map_pos.x, g_current_map_pos.y,
-            g_target_map.x, g_target_map.y);
-
-        status->heading_error = angle_difference(target_heading, g_current_pose.heading);
-        status->linear_velocity = 0.0f;  // TODO: get from chassis
-        status->angular_velocity = 0.0f;
-
-        xSemaphoreGive(g_nav_mutex);
-        return ESP_OK;
-    }
-
-    return ESP_FAIL;
-}
-
-esp_err_t vive_nav_get_pose(vive_pose_t *pose)
-{
-    if (!g_nav_initialized || pose == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (xSemaphoreTake(g_nav_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        *pose = g_current_pose;
-        xSemaphoreGive(g_nav_mutex);
-        return ESP_OK;
-    }
-
-    return ESP_FAIL;
-}
-
-esp_err_t vive_nav_get_path(path_t *path)
-{
-    if (!g_nav_initialized || path == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    if (xSemaphoreTake(g_nav_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        *path = g_current_path;
-        xSemaphoreGive(g_nav_mutex);
-        return ESP_OK;
-    }
-
-    return ESP_FAIL;
-}
-
-esp_err_t vive_nav_replan(void)
-{
-    if (!g_nav_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    if (xSemaphoreTake(g_nav_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        if (g_nav_state == NAV_STATE_NAVIGATING) {
-            g_nav_state = NAV_STATE_PLANNING;
-            ESP_LOGI(TAG, "Replanning requested");
-        }
-        xSemaphoreGive(g_nav_mutex);
-        return ESP_OK;
-    }
-
-    return ESP_FAIL;
-}
+// Placeholder for replan
+esp_err_t vive_nav_replan(void) { return ESP_OK; }
