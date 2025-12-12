@@ -65,30 +65,39 @@ static void run_mission_attack_low_tower_blue() {
   }
 
   switch (step) {
-  case 0: // Waypoint 1: (40, 20)
-    if (vive_nav_set_target_map(40, 40) == ESP_OK) {
-      step = 1;
-    }
+  case 0: // Waypoint 1: (40, 40)
+    // Run Step-by-Step Navigation
+    // if (vive_nav_drive_blocking(40, 40) == ESP_OK) {
+    //   step = 1;
+    // } else {
+    //   ESP_LOGE(TAG, "M1: Failed to reach (40, 40)");
+    //   nav_mission_stop();
+    // }
+    ESP_LOGI(TAG, "M1: Waypoint 1 blocking drive disabled. Skipping.");
+    // Note: blocking call finishes when arrived. So we can skip "wait state"
+    // But to minimize code changes, we can just jump to step 2?
+    // Let's just remove the Wait state (Case 1) and jump to next target
+    step = 2;
     break;
 
-  case 1: // Wait for Waypoint 1
-    if (nav_st.state == NAV_STATE_ARRIVED) {
-      step = 2;
-    }
+  case 1:
+    // OBSOLETE
+    step = 2;
     break;
 
   case 2: // Waypoint 2: (40, 62)
     ESP_LOGI(TAG, "M1: Navigating to (40, 62)...");
-    if (vive_nav_set_target_map(40, 62) == ESP_OK) {
-      step = 3;
-    }
+    // if (vive_nav_drive_blocking(40, 62) == ESP_OK) {
+    //   step = 4; // Jump to Alignment
+    // } else {
+    //   nav_mission_stop();
+    // }
+    ESP_LOGI(TAG, "M1: Waypoint 2 blocking drive disabled. Skipping.");
+    step = 4;
     break;
 
-  case 3: // Wait for Waypoint 2
-    if (nav_st.state == NAV_STATE_ARRIVED) {
-      vive_nav_stop(); // Take over control for alignment
-      step = 4;
-    }
+  case 3: // OBSOLETE
+    step = 4;
     break;
 
   case 4: // Check Alignment: Target +90 deg (+Y)
@@ -175,29 +184,32 @@ static void run_mission_attack_nexus_blue() {
 
   switch (step) {
   case 0: // Waypoint 1: (40, 40)
-    if (vive_nav_set_target_map(40, 40) == ESP_OK) {
-      step = 1;
-    }
+    // if (vive_nav_drive_blocking(40, 40) == ESP_OK) {
+    //   step = 2; // Skip wait
+    // } else {
+    //   nav_mission_stop();
+    // }
+    ESP_LOGI(TAG, "M3: Waypoint 1 blocking drive disabled. Skipping.");
+    step = 2;
     break;
 
   case 1: // Wait for Waypoint 1
-    if (nav_st.state == NAV_STATE_ARRIVED) {
-      step = 2;
-    }
+    step = 2;
     break;
 
   case 2: // Waypoint 2: (40, 15)
     ESP_LOGI(TAG, "M3: Navigating to (40, 15)...");
-    if (vive_nav_set_target_map(40, 15) == ESP_OK) {
-      step = 3;
-    }
+    // if (vive_nav_drive_blocking(40, 15) == ESP_OK) {
+    //   step = 4; // Jump to Align
+    // } else {
+    //   nav_mission_stop();
+    // }
+    ESP_LOGI(TAG, "M3: Waypoint 2 blocking drive disabled. Skipping.");
+    step = 4;
     break;
 
   case 3: // Wait for Waypoint 2
-    if (nav_st.state == NAV_STATE_ARRIVED) {
-      vive_nav_stop(); // Take over control for alignment
-      step = 4;
-    }
+    step = 4;
     break;
 
   case 4: // Check Alignment: Target -90 deg (-Y)
@@ -352,29 +364,32 @@ static void run_mission_attack_nexus_red() {
 
   switch (step) {
   case 0: // Waypoint 1: (40, 100)
-    if (vive_nav_set_target_map(40, 100) == ESP_OK) {
-      step = 1;
-    }
+    // if (vive_nav_drive_blocking(40, 100) == ESP_OK) {
+    //   step = 2; // Skip wait
+    // } else {
+    //   nav_mission_stop();
+    // }
+    ESP_LOGI(TAG, "M4: Waypoint 1 blocking drive disabled. Skipping.");
+    step = 2;
     break;
 
   case 1: // Wait for Waypoint 1
-    if (nav_st.state == NAV_STATE_ARRIVED) {
-      step = 2;
-    }
+    step = 2;
     break;
 
   case 2: // Waypoint 2: (40, 130)
     ESP_LOGI(TAG, "M4: Navigating to (40, 130)...");
-    if (vive_nav_set_target_map(40, 130) == ESP_OK) {
-      step = 3;
-    }
+    // if (vive_nav_drive_blocking(40, 130) == ESP_OK) {
+    //   step = 4;
+    // } else {
+    //   nav_mission_stop();
+    // }
+    ESP_LOGI(TAG, "M4: Waypoint 2 blocking drive disabled. Skipping.");
+    step = 4;
     break;
 
   case 3: // Wait for Waypoint 2
-    if (nav_st.state == NAV_STATE_ARRIVED) {
-      vive_nav_stop(); // Take over control for alignment
-      step = 4;
-    }
+    step = 4;
     break;
 
   case 4: // Check Alignment: Target +90 deg (+Y)

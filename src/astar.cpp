@@ -452,27 +452,35 @@ esp_err_t astar_simplify_path(path_t *path) {
  */
 esp_err_t astar_get_next_target(const path_t *path, int16_t current_x,
                                 int16_t current_y, float lookahead_distance,
-                                int16_t *target_x, int16_t *target_y) {
+                                uint16_t start_index, int16_t *target_x,
+                                int16_t *target_y, uint16_t *out_index) {
   if (path == NULL || !path->valid || path->length == 0) {
     return ESP_FAIL;
   }
 
-  // 找到距离当前位置最近的路径点
-  uint16_t closest_index = 0;
+  // Safety cap
+  if (start_index >= path->length) {
+    start_index = path->length - 1;
+  }
+
+  // 1. Find closest point ON THE REMAINING PATH [start_index, end]
+  uint16_t closest_index = start_index;
   float min_dist = 1e9f;
 
-  for (uint16_t i = 0; i < path->length; i++) {
+  for (uint16_t i = start_index; i < path->length; i++) {
     float dx = path->waypoints[i].x - current_x;
     float dy = path->waypoints[i].y - current_y;
     float dist = sqrtf(dx * dx + dy * dy);
 
+    // Only update if significantly closer (strict < with margin? No, standard <
+    // is fine)
     if (dist < min_dist) {
       min_dist = dist;
       closest_index = i;
     }
   }
 
-  // 从最近点开始，找到前瞻距离处的点
+  // 2. Scan forward from closest point to find lookahead point
   for (uint16_t i = closest_index; i < path->length; i++) {
     float dx = path->waypoints[i].x - current_x;
     float dy = path->waypoints[i].y - current_y;
@@ -481,13 +489,18 @@ esp_err_t astar_get_next_target(const path_t *path, int16_t current_x,
     if (dist >= lookahead_distance) {
       *target_x = path->waypoints[i].x;
       *target_y = path->waypoints[i].y;
+      if (out_index)
+        *out_index = i;
       return ESP_OK;
     }
   }
 
-  // 如果没有找到，返回终点
+  // 3. If reached end without satisfying lookahead, return end
   *target_x = path->waypoints[path->length - 1].x;
   *target_y = path->waypoints[path->length - 1].y;
+  if (out_index)
+    *out_index = path->length - 1;
+
   return ESP_OK;
 }
 

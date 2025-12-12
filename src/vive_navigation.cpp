@@ -117,13 +117,39 @@ static void update_localization_step(float dt) {
       // New = (atan2 + PI) - 3PI/2 = atan2 - PI/2.
       float heading_rad = atan2f(y2 - y1, x2 - x1);
       heading_rad -= M_PI / 2.0f;
+      heading_rad =
+          normalize_angle(heading_rad); // CRITICAL FIX: Normalize immediately
 
       if (!g_has_first_fix) {
         Serial.printf("NAV: First Fix! Map:(%.1f, %.1f)\n", cx, cy);
         ekf_init(cx, cy, heading_rad);
         g_has_first_fix = true;
       } else {
-        ekf_update_vive(cx, cy, heading_rad);
+        // --- Outlier Rejection (Gatekeeper) ---
+        robot_pose_t current_est = ekf_get_pose();
+        float dist_err =
+            sqrtf(powf(cx - current_est.x, 2) + powf(cy - current_est.y, 2));
+
+        // Threshold: 15.0 pixel/inch (Conservative jump limit)
+        // If jump is huge, ignore it, UNLESS it persists (Kidnapped robot)
+        static int s_reject_count = 0;
+        const int MAX_REJECT_COUNT = 20; // ~400ms of bad data
+
+        if (dist_err > 15.0f && s_reject_count < MAX_REJECT_COUNT) {
+          s_reject_count++;
+          // Log occasionally
+          if (s_reject_count % 5 == 0) {
+            ESP_LOGW(TAG, "Vive Glitch Ignored! Dist=%.1f. Cnt=%d", dist_err,
+                     s_reject_count);
+          }
+          // DO NOT UPDATE EKF with this bad data
+        } else {
+          if (s_reject_count >= MAX_REJECT_COUNT) {
+            ESP_LOGW(TAG, "Vive Jump Persisted! Force Updating EKF.");
+          }
+          s_reject_count = 0; // Reset counter
+          ekf_update_vive(cx, cy, heading_rad);
+        }
       }
       valid_signal = true;
     }
@@ -184,74 +210,58 @@ static void update_motion_control_step(void) {
     return;
   }
 
-  // 2. Pure Pursuit: Find Lookahead Point
+  // 2. Simple Heading Tracking
   int16_t target_x, target_y;
-  if (astar_get_next_target(&g_current_path, (int16_t)pose.x, (int16_t)pose.y,
-                            NAV_LOOKAHEAD_DIST_INCH, &target_x,
-                            &target_y) != ESP_OK) {
-    // Fallback: aim at final goal
+  uint16_t next_index = 0;
+  // Use a small lookahead just to get the immediate next direction
+  // Pass current_waypoint as start_index to prevent backtracking
+  if (astar_get_next_target(
+          &g_current_path, (int16_t)pose.x, (int16_t)pose.y,
+          12.0f, // 12 inches ahead (Smoother, Straighter lines)
+          g_nav_status.current_waypoint, &target_x, &target_y,
+          &next_index) != ESP_OK) {
     target_x = g_nav_status.target_map_pos.x;
     target_y = g_nav_status.target_map_pos.y;
+  } else {
+    // Only update forward (monotonicity check inside astar already done by
+    // start_index, but good to be safe)
+    if (next_index > g_nav_status.current_waypoint) {
+      g_nav_status.current_waypoint = next_index;
+    }
   }
 
-  // 3. Compute Control Command
+  // 3. The Core Logic: It is JUST a Heading Angle.
   float dx = (float)target_x - pose.x;
   float dy = (float)target_y - pose.y;
   float target_heading = atan2f(dy, dx);
-  float heading_err = normalize_angle(target_heading - pose.theta);
+  float current_heading = pose.theta;
+  float heading_err = normalize_angle(target_heading - current_heading);
 
-  float linear_cmd = 0.0f;
-  float angular_cmd = 0.0f;
+  // 4. Control: Fix the Angle, Drive Forward
+  // P-Controller for Turn
+  float angular_cmd = heading_err * PID_KP_YAW;
 
-  // A. Turn in Place if error is large (>45 deg) - increased from 30 to reduce
-  // oscillation
-  // Smooth Control: Scale linear speed based on heading error
-  // (Turn-while-driving)
-  angular_cmd = heading_err * PID_KP_YAW;
+  // Constant Speed (stop if facing wrong way)
+  // Constant Speed (stop if facing wrong way)
+  // Stop and turn if error is > 30 degrees (PI/6) to avoid wide arcs crashing
+  // into walls
+  float linear_cmd = NAV_CONST_LINEAR_SPEED;
+  if (fabsf(heading_err) > (M_PI / 6.0f)) {
+    linear_cmd = 0.0f; // Turn in place first
+  }
 
-  // Clamp Angular Speed (Safety)
-  if (angular_cmd > NAV_TURN_SPEED)
-    angular_cmd = NAV_TURN_SPEED;
-  if (angular_cmd < -NAV_TURN_SPEED)
-    angular_cmd = -NAV_TURN_SPEED;
-
-  // Linear Speed Scaling:
-  // 1. If error is small, drive fast.
-  // 2. If error is large (> 60 deg), stop and turn in place.
-  // 3. In between, scale speed by cos(err).
-
-  // Linear Speed Scaling:
-  // ALWAYS move. Don't stop.
-  // Scale speed by cos(err) to slow down in tight turns, but never 0.
-  // Unless error > 90 (wrong way), then we naturally slow down or stop via
-  // cos().
-
-  float scale = cosf(heading_err);
-  // Ensure we don't go backwards if error > 90
-  if (scale < 0)
-    scale = 0;
-
-  // Minimal speed to prevent getting stuck if scaling is too aggressive?
-  // User wants "Flow". Let's just use the cosine scale.
-  linear_cmd = NAV_CONST_LINEAR_SPEED * scale;
-
-  // Debug Print
+  // Debug
   static int motion_log_timer = 0;
-  if (++motion_log_timer >= 10) { // Every 200ms
-    float cur_heading_deg = pose.theta * 180.0f / M_PI;
-    float tgt_heading_deg = target_heading * 180.0f / M_PI;
-    float err_deg = heading_err * 180.0f / M_PI;
-
-    // User requested explicit Heading Debugging
-    Serial.printf(
-        "NAV_MOTION: St=%d Pos(%.1f,%.1f) TgtPos(%.1f,%.1f) | HEADINGS: "
-        "Cur=%.1f Tgt=%.1f Err=%.1f | Cmd(L=%.2f, A=%.2f)\n",
-        g_nav_status.state, pose.x, pose.y, (float)target_x, (float)target_y,
-        cur_heading_deg, tgt_heading_deg, err_deg, linear_cmd, angular_cmd);
+  if (++motion_log_timer >= 20) {
+    Serial.printf("NAV_SIMPLE: Tgt(%.0f,%.0f) | HEAD: Tgt=%.1f Cur=%.1f "
+                  "Err=%.1f | Cmd: L=%.2f A=%.2f\n",
+                  (float)target_x, (float)target_y,
+                  target_heading * 180.0f / M_PI,
+                  current_heading * 180.0f / M_PI, heading_err * 180.0f / M_PI,
+                  linear_cmd, angular_cmd);
     motion_log_timer = 0;
   }
 
-  // 4. Send to Chassis V2
   chassis_v2_set_velocity(linear_cmd, angular_cmd);
 }
 
@@ -378,6 +388,7 @@ esp_err_t vive_nav_set_target_map(int16_t map_x, int16_t map_y) {
   g_nav_status.target_map_pos.y = map_y;
   g_nav_status.state = NAV_STATE_NAVIGATING; // Start Moving!
   g_nav_status.path_length = g_current_path.length;
+  g_nav_status.current_waypoint = 0; // Reset progress
 
   Serial.printf("NAV: Path Planned! Length: %d. Moving...\n",
                 g_current_path.length);

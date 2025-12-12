@@ -222,7 +222,7 @@ esp_err_t grid_map_init(void) {
   // 动态分配地图内存: 60 x 144 = 8,640 bytes
   size_t map_size = 60 * 144 * sizeof(uint8_t);
   g_grid_map =
-      (uint8_t (*)[MAP_WIDTH])heap_caps_malloc(map_size, MALLOC_CAP_8BIT);
+      (uint8_t(*)[MAP_WIDTH])heap_caps_malloc(map_size, MALLOC_CAP_8BIT);
 
   if (g_grid_map == NULL) {
     ESP_LOGE(TAG, "Failed to allocate %u bytes for grid map", map_size);
@@ -242,8 +242,8 @@ esp_err_t grid_map_init(void) {
   // 墙壁本身厚度设为 0.1"，加上 Robot Radius
   // 左墙 (X=0)
   add_obstacle_inch(0.0f, 0.0f, 0.0f, 144.0f, COST_OBSTACLE, ROBOT_RADIUS_INCH);
-  // 右墙 (X=60)
-  add_obstacle_inch(60.0f, 0.0f, 0.0f, 144.0f, COST_OBSTACLE,
+  // 右墙 (X=60) -> X=55.0 (Constraint: Force Center Path)
+  add_obstacle_inch(55.0f, 0.0f, 0.0f, 144.0f, COST_OBSTACLE,
                     ROBOT_RADIUS_INCH);
   // 南墙 (Y=0)
   add_obstacle_inch(0.0f, 0.0f, 60.0f, 0.0f, COST_OBSTACLE, ROBOT_RADIUS_INCH);

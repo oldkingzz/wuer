@@ -265,12 +265,15 @@ esp_err_t chassis_v2_init(void) {
 
 esp_err_t chassis_v2_set_velocity(float linear, float angular) {
   // Debug Log (Rate Limited) to find out who is controlling motors
+  // Debug Log (Rate Limited) to find out who is controlling motors
+  /*
   static TickType_t last_log = 0;
   TickType_t now = xTaskGetTickCount();
   if ((now - last_log) >= pdMS_TO_TICKS(200)) { // Print 5 times a second
     Serial.printf("CHASSIS_V2: CMD lin=%.2f ang=%.2f\n", linear, angular);
     last_log = now;
   }
+  */
 
   // Fix: Reverse linear direction (Joystick Forward was Robot Backward).
   // This ensures Positive Linear = Robot Moves Forward = Joystick Forward.
@@ -438,6 +441,74 @@ esp_err_t chassis_v2_move_dist_blocking(float dist_m, float speed_m_s) {
   }
 
   ESP_LOGI(TAG, "Blocking Move Done. Diff: %ld / %ld",
+           (long)((abs(encoder_get_count() - start_p1) +
+                   abs(encoder2_get_count() - start_p2)) /
+                  2),
+           (long)target_pulses);
+
+  return ESP_OK;
+}
+
+esp_err_t chassis_v2_turn_angle_blocking(float angle_deg, float speed_deg_s) {
+  if (speed_deg_s < 0)
+    speed_deg_s = -speed_deg_s;
+  if (fabs(angle_deg) < 1.0f)
+    return ESP_OK;
+
+  // Convert angle to pulses
+  // Arc length L = (angle_deg / 360) * PI * WHEEL_BASE
+  // Pulses = L / (PI * WHEEL_DIAMETER) * CPR
+  //        = (angle/360 * PI * WB) / (PI * WD) * CPR
+  //        = (angle/360) * (WB/WD) * CPR
+
+  float ratio = WHEEL_BASE_M / WHEEL_DIAMETER_M;
+  float rotations = fabsf(angle_deg) / 360.0f;
+  float wheel_rotations = rotations * ratio;
+  int32_t target_pulses = (int32_t)(wheel_rotations * ENCODER_CPR);
+
+  int32_t start_p1 = encoder_get_count();
+  int32_t start_p2 = encoder2_get_count();
+
+  ESP_LOGI(TAG, "Blocking Turn: %.1f deg -> %ld pulses. WB/WD=%.2f", angle_deg,
+           (long)target_pulses, ratio);
+
+  // Speed in rad/s for chassis set velocity
+  // speed_deg_s -> rad/s
+  float speed_rad_s = speed_deg_s * M_PI / 180.0f;
+
+  // Direction: Positive Angle (CCW) -> Positive Angular Vel
+  float direction = (angle_deg > 0) ? 1.0f : -1.0f;
+
+  chassis_v2_set_velocity(0.0f, direction * speed_rad_s);
+
+  int timeout_ms = 5000;
+  int elapsed = 0;
+
+  while (elapsed < timeout_ms) {
+    int32_t curr_p1 = encoder_get_count();
+    int32_t curr_p2 = encoder2_get_count();
+
+    // Turns are differential: One wheel fwd, one back.
+    // Total delta = (|dp1| + |dp2|) / 2 ? No.
+    // Left wheel turns -X, Right turns +X.
+    // Just sum absolute deltas for safety.
+    int32_t diff1 = abs(curr_p1 - start_p1);
+    int32_t diff2 = abs(curr_p2 - start_p2);
+    int32_t avg_diff = (diff1 + diff2) / 2;
+
+    if (avg_diff >= target_pulses) {
+      break;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+    elapsed += 10;
+  }
+
+  chassis_v2_stop();
+  if (elapsed >= timeout_ms) {
+    ESP_LOGW(TAG, "Blocking Turn TIMEOUT");
+  }
+  ESP_LOGI(TAG, "Blocking Turn Done. Diff: %ld / %ld",
            (long)((abs(encoder_get_count() - start_p1) +
                    abs(encoder2_get_count() - start_p2)) /
                   2),

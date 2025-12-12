@@ -92,6 +92,16 @@ esp_err_t chassis_v2_get_wheel_dist_m(float *left_total, float *right_total);
  */
 esp_err_t chassis_v2_move_dist_blocking(float dist_m, float speed_m_s);
 
+/**
+ * @brief Blocking rotate for fixed angle (using encoders)
+ *
+ * @param angle_deg Angle to rotate in degrees (positive = counter-clockwise,
+ * negative = clockwise)
+ * @param speed_deg_s Rotation speed in deg/s (must be positive)
+ * @return ESP_OK on success
+ */
+esp_err_t chassis_v2_turn_angle_blocking(float angle_deg, float speed_deg_s);
+
 #ifdef __cplusplus
 }
 #endif
