@@ -28,9 +28,8 @@ static const char *TAG = "NAV";
 // Constants & Tunings
 // ==========================================
 #define NAV_LOOKAHEAD_DIST_INCH 10.0f // Pure Pursuit Lookahead
-#define NAV_GOAL_TOLERANCE_INCH                                                \
-  4.0f // Increased to 4.0 to excessive precision requirements causing stalls
-#define NAV_YAW_Align_TOLERANCE 0.1f // ~5.7 degrees
+#define NAV_GOAL_TOLERANCE_INCH 2.5f  // User Requested 2.5
+#define NAV_YAW_Align_TOLERANCE 0.1f  // ~5.7 degrees
 
 // USE CONSTANT VELOCITY FROM V2 MACROS
 // 用户要求降低线速度到 0.1 以保证安全
@@ -38,13 +37,21 @@ static const char *TAG = "NAV";
 
 #define NAV_TURN_SPEED 1.5f // rad/s
 
-#define PID_KP_YAW 0.6f // Reduced gain for smoother turning (was 1.0)
+// PID Parameters for Heading
+#define PID_KP_YAW 0.8f // Moderate gain (0.6 -> 0.8)
 
 // ==========================================
 // Global State
 // ==========================================
 static vive_pose_t g_current_pose = {0, 0, 0.0f, false};
 static bool g_has_first_fix = false;
+
+// Auto-Routing State for Via-Point (28, 69)
+static bool s_has_pending_final = false;
+static int16_t s_pending_final_x = 0;
+static int16_t s_pending_final_y = 0;
+const int16_t VIA_POINT_X = 28;
+const int16_t VIA_POINT_Y = 69;
 
 // Navigation State
 static nav_status_t g_nav_status = {.state = NAV_STATE_IDLE};
@@ -204,6 +211,21 @@ static void update_motion_control_step(void) {
   float dist_finish = sqrtf(dx_finish * dx_finish + dy_finish * dy_finish);
 
   if (dist_finish < NAV_GOAL_TOLERANCE_INCH) {
+    if (s_has_pending_final) {
+      ESP_LOGI(
+          TAG,
+          "Via-Point (28, 69) Reached! Continuing to Final Goal (%d, %d)...",
+          s_pending_final_x, s_pending_final_y);
+      // Trigger next leg immediately
+      int16_t next_x = s_pending_final_x;
+      int16_t next_y = s_pending_final_y;
+      // Important: clear flag BEFORE calling set_target to prevent infinite
+      // recursion loop logic
+      s_has_pending_final = false;
+      vive_nav_set_target_map(next_x, next_y);
+      return; // Continue navigating
+    }
+
     ESP_LOGI(TAG, "Goal Reached! dist=%.1f", dist_finish);
     stop_chassis();
     g_nav_status.state = NAV_STATE_ARRIVED;
@@ -243,10 +265,10 @@ static void update_motion_control_step(void) {
 
   // Constant Speed (stop if facing wrong way)
   // Constant Speed (stop if facing wrong way)
-  // Stop and turn if error is > 30 degrees (PI/6) to avoid wide arcs crashing
-  // into walls
+  // STRICT MODE: Stop and turn if error is > 10 degrees.
+  // This mimicks "Step-by-Step" navigation: Align perfectly first, then move.
   float linear_cmd = NAV_CONST_LINEAR_SPEED;
-  if (fabsf(heading_err) > (M_PI / 6.0f)) {
+  if (fabsf(heading_err) > (10.0f * M_PI / 180.0f)) {
     linear_cmd = 0.0f; // Turn in place first
   }
 
@@ -357,9 +379,7 @@ esp_err_t vive_nav_init(void) {
 // Set Target MAP (Trigger A* Planning)  <-- Main Logic Here
 // ---------------------------------------------------------
 esp_err_t vive_nav_set_target_map(int16_t map_x, int16_t map_y) {
-  Serial.printf("NAV: Set Target Map: (%d, %d)\n", map_x, map_y);
-  ESP_LOGI(TAG, "Set Target Map: (%d, %d)", map_x, map_y);
-
+  // 0. Safety Check
   if (!g_has_first_fix) {
     Serial.printf("NAV ERROR: No Localization Fix yet!\n");
     ESP_LOGE(TAG, "Ignored: No Localization Fix yet");
@@ -367,20 +387,67 @@ esp_err_t vive_nav_set_target_map(int16_t map_x, int16_t map_y) {
   }
 
   robot_pose_t start = ekf_get_pose();
-  Serial.printf("NAV: Start pose: (%.1f, %.1f)\n", start.x, start.y);
 
-  // 1. Plan Path
+  // 1. Zone Crossing Check (Auto-Routing via 28, 69)
+  // Define Boundary: Y = 69
+  // Logic: If Start and End are on opposite sides of Y=69, Force Via-Point.
+  // Exception: If we are already very close to Via-Point (< 8 inches), just go
+  // direct.
+
+  // Reset pending by default (unless we set it below)
+  // Note: If this function was called BY the pending logic, s_has_pending_final
+  // was cleared just before. So we default to clearing it for new user
+  // commands. Assuming this function is not re-entrant.
+
+  // Actually, we should check if this call IS the "next leg".
+  // The caller (motion loop) clears the flag before calling.
+  // So if we are called with s_has_pending_final == false, it's a fresh
+  // command.
+
+  bool uses_via_point = false;
+  if (!s_has_pending_final) { // Only check for fresh commands
+    bool start_upper = (start.y > 69.0f);
+    bool target_upper = (map_y > 69);
+
+    float dist_to_via =
+        sqrtf(powf(start.x - VIA_POINT_X, 2) + powf(start.y - VIA_POINT_Y, 2));
+
+    if (start_upper != target_upper && dist_to_via > 8.0f) {
+      Serial.printf(
+          "NAV: Zone Crossing Detected! Routing via (%d, %d) first.\n",
+          VIA_POINT_X, VIA_POINT_Y);
+
+      // Store Real Target
+      s_pending_final_x = map_x;
+      s_pending_final_y = map_y;
+      s_has_pending_final = true;
+
+      // Hijack Target
+      map_x = VIA_POINT_X;
+      map_y = VIA_POINT_Y;
+      uses_via_point = true;
+    }
+  }
+
+  Serial.printf("NAV: Set Target Map: (%d, %d) %s\n", map_x, map_y,
+                uses_via_point ? "[VIA]" : "[DIRECT]");
+  ESP_LOGI(TAG, "Set Target Map: (%d, %d)", map_x, map_y);
+
+  // 2. Plan Path
   esp_err_t ret = astar_plan_path((int16_t)start.x, (int16_t)start.y, map_x,
                                   map_y, &g_current_path);
 
   if (ret != ESP_OK) {
     Serial.printf("NAV ERROR: A* Plan Failed!\n");
     ESP_LOGE(TAG, "A* Plan Failed!");
+    // If failed to plan to Via Point, clear pending?
+    // Yes, otherwise we might get stuck state.
+    s_has_pending_final = false;
     g_nav_status.state = NAV_STATE_ERROR;
     return ESP_FAIL;
   }
 
-  // 2. Smooth Path
+  // 3. Smooth Path
   astar_simplify_path(&g_current_path);
 
   // 3. Update Status
