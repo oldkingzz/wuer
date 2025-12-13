@@ -22,35 +22,36 @@ extern "C" {
 /**
  * @brief ToF sensor configuration
  */
-#define TOF_MAX_DISTANCE_MM          500  // Maximum valid distance (mm)
-#define TOF_CHANNEL_SWITCH_DELAY_MS  2    // Delay after channel switch (ms)
-                                          // 减少到2ms以提高读取速度（只使用2个传感器）
-                                          // Reduced to 2ms for faster reading (only using 2 sensors)
-                                          // 原来10ms太长，导致50ms周期内无法完成2个传感器读取
-                                          // Previous 10ms was too long, couldn't finish 2 sensors in 50ms period
+#define TOF_MAX_DISTANCE_MM 1500 // Maximum valid distance (1.5m)
+#define TOF_CHANNEL_SWITCH_DELAY_MS                                            \
+  2 // Delay after channel switch (ms)
+    // 减少到2ms以提高读取速度（只使用2个传感器）
+    // Reduced to 2ms for faster reading (only using 2 sensors)
+    // 原来10ms太长，导致50ms周期内无法完成2个传感器读取
+    // Previous 10ms was too long, couldn't finish 2 sensors in 50ms period
 
 /**
  * @brief ToF sensor data structure
  */
 typedef struct {
-    uint16_t distance_mm;      // Distance in millimeters
-    bool valid;                // True if measurement is valid
-    uint8_t range_status;      // VL53L0X range status code
-    uint32_t timestamp_ms;     // Timestamp of measurement (millis())
+  uint16_t distance_mm;  // Distance in millimeters
+  bool valid;            // True if measurement is valid
+  uint8_t range_status;  // VL53L0X range status code
+  uint32_t timestamp_ms; // Timestamp of measurement (millis())
 } tof_data_t;
 
 /**
  * @brief ToF sensor positions
  */
 typedef enum {
-    TOF_TOP = 0,        // Top sensor (SD0, channel 0)
-    TOF_FRONT = 1,      // Front sensor (SD1, channel 1)
-    TOF_LEFT_FRONT = 2, // Left-Front sensor (SD2, channel 2)
-    TOF_LEFT_REAR = 3,  // Left-Rear sensor (SD3, channel 3)
+  TOF_TOP = 0,        // Top sensor (SD0, channel 0)
+  TOF_FRONT = 1,      // Front sensor (SD1, channel 1)
+  TOF_LEFT_FRONT = 2, // Left-Front sensor (SD2, channel 2)
+  TOF_LEFT_REAR = 3,  // Left-Rear sensor (SD3, channel 3)
 
-    // 兼容旧代码的别名
-    TOF_LEFT = TOF_LEFT_FRONT,  // 兼容旧代码
-    TOF_RIGHT = TOF_FRONT       // 兼容旧代码
+  // 兼容旧代码的别名
+  TOF_LEFT = TOF_LEFT_FRONT, // 兼容旧代码
+  TOF_RIGHT = TOF_FRONT      // 兼容旧代码
 } tof_position_t;
 
 /**
@@ -86,7 +87,8 @@ void tof_set_channel_delay(uint8_t delay_ms);
 /**
  * @brief Read distance from a specific ToF sensor
  *
- * @param position Sensor position (TOF_TOP, TOF_FRONT, TOF_LEFT_FRONT, or TOF_LEFT_REAR)
+ * @param position Sensor position (TOF_TOP, TOF_FRONT, TOF_LEFT_FRONT, or
+ * TOF_LEFT_REAR)
  * @param data Pointer to store measurement data
  * @return ESP_OK on success, ESP_FAIL on error
  */
@@ -151,14 +153,15 @@ uint16_t tof_get_left_rear_distance(void);
 // 兼容旧代码的函数别名
 // 当前实际物理布局：SD1 = 前方 ToF，SD2 = 右侧 ToF
 // 为了让旧代码里 "right" 读到右侧传感器，这里把 right 映射到 left_front 通道
-#define tof_get_left_distance()  tof_get_front_distance()
+#define tof_get_left_distance() tof_get_front_distance()
 #define tof_get_right_distance() tof_get_left_front_distance()
 
 /**
  * @brief Start asynchronous ToF reading task
  *
  * Starts a background FreeRTOS task that continuously reads all ToF sensors.
- * Other tasks can call tof_get_cached_*() functions to get latest readings without blocking.
+ * Other tasks can call tof_get_cached_*() functions to get latest readings
+ * without blocking.
  *
  * @return ESP_OK on success, ESP_FAIL on error
  */
@@ -209,4 +212,3 @@ bool tof_is_data_fresh(tof_position_t position, uint32_t timeout_ms);
 #endif
 
 #endif // TOF_SENSOR_H
-

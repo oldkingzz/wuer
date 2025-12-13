@@ -242,8 +242,8 @@ esp_err_t grid_map_init(void) {
   // 墙壁本身厚度设为 0.1"，加上 Robot Radius
   // 左墙 (X=0)
   add_obstacle_inch(0.0f, 0.0f, 0.0f, 144.0f, COST_OBSTACLE, ROBOT_RADIUS_INCH);
-  // 右墙 (X=60) -> X=55.0 (Constraint: Force Center Path)
-  add_obstacle_inch(55.0f, 0.0f, 0.0f, 144.0f, COST_OBSTACLE,
+  // 右墙 (X=60)
+  add_obstacle_inch(60.0f, 0.0f, 0.0f, 144.0f, COST_OBSTACLE,
                     ROBOT_RADIUS_INCH);
   // 南墙 (Y=0)
   add_obstacle_inch(0.0f, 0.0f, 60.0f, 0.0f, COST_OBSTACLE, ROBOT_RADIUS_INCH);
@@ -272,10 +272,10 @@ esp_err_t grid_map_init(void) {
 
   // ========== 3. 基地 (Nexus) 8"x5" ==========
   ESP_LOGI(TAG, "  Placing nexus bases (Inflated)...");
-  // 南基地: 中心(30, 2.5) -> X:[26,34], Y:[0,5]
-  add_obstacle_inch(26.0f, 0.0f, 8.0f, 5.0f, COST_OBSTACLE, ROBOT_RADIUS_INCH);
-  // 北基地: 中心(30, 141.5) -> X:[26,34], Y:[139,144]
-  add_obstacle_inch(26.0f, 139.0f, 8.0f, 5.0f, COST_OBSTACLE,
+  // 南基地: 中心(40, 2.5) -> X:[36,44], Y:[0,5]
+  add_obstacle_inch(36.0f, 0.0f, 8.0f, 5.0f, COST_OBSTACLE, ROBOT_RADIUS_INCH);
+  // 北基地: 中心(40, 141.5) -> X:[36,44], Y:[139,144]
+  add_obstacle_inch(36.0f, 139.0f, 8.0f, 5.0f, COST_OBSTACLE,
                     ROBOT_RADIUS_INCH);
 
   // ========== 4. 塔楼 (Tower) 6"x8" ==========

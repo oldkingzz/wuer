@@ -16,7 +16,7 @@
 /**
  * @brief Robot Configuration
  */
-#define ROBOT_RADIUS_INCH 6.0f // 5.5" actual + 0.5" safety
+#define ROBOT_RADIUS_INCH 5.5f // 5.5" actual collision radius
 
 #ifdef __cplusplus
 extern "C" {
@@ -67,7 +67,7 @@ typedef struct {
 /**
  * @brief 标定点数量 (建议 >= 4，覆盖四个角落)
  */
-#define NAV_CALIB_POINT_COUNT 4
+#define NAV_CALIB_POINT_COUNT 6
 
 /**
  * @brief 预设目标点数量

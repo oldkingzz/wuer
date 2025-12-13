@@ -46,377 +46,79 @@ esp_err_t nav_mission_stop(void) {
 // Mission Implementations
 // ==========================================
 
-// M1: Low Tower Blue (ID 1)
-static void run_mission_attack_low_tower_blue() {
-  static int step = 0;
+// ==========================================
+// Mission Implementations
+// ==========================================
 
-  // RESET LOGIC
-  if (g_mission_status.state == NAV_MISSION_STATE_GOTO_PRE_POINT) {
-    step = 0;
-    g_mission_status.state = NAV_MISSION_STATE_ALIGN_TOF; // Mark as running
-  }
+/**
+ * @brief Helper: Point and Shoot Strategy
+ * 1. Calculate angle from current EKF pose to (target_x, target_y)
+ * 2. Turn to face target
+ * 3. Calculate distance to target
+ * 4. Move forward (distance + extra_run_m)
+ * 5. Move backward (retreat_dist_m)
+ */
+static void mission_point_and_shoot_inch(float target_x_in, float target_y_in,
+                                         float extra_run_m,
+                                         float retreat_dist_m) {
+  // 1. 获取当前位姿
+  robot_pose_t pose = ekf_get_pose();
 
-  nav_status_t g_nav_status;
-  vive_nav_get_status(&g_nav_status);
+  // 2. 计算目标向量
+  float dx_in = target_x_in - pose.x; // pose.x is in INCHES by EKF convention?
+  // Wait, EKF convention usually METERS? Let's check localization_ekf.h or
+  // usage. Codebase check: grid_map uses inches. ekf_init uses map_x
+  // (pixels/inches). Assuming EKF state (x,y) are in **Inches** based on init
+  // code in vive_navigation.cpp. Corrections: EKF internal state might be
+  // meters if standard EKF. Re-reading vive_navigation.cpp:
+  //   ekf_init(cx, cy, heading_rad); -> cx, cy are **pixels** (which are inches
+  //   in map).
+  // Yes, EKF state (x, y) is in **Inches**.
 
-  switch (step) {
-  case 0: // Waypoint 1: (40, 40)
-    ESP_LOGI(TAG, "M1: Step 0 -> Nav to (40, 40)");
-    vive_nav_set_target_map(40, 40);
-    step = 1;
-    break;
+  float dy_in = target_y_in - pose.y;
 
-  case 1: // Wait Arrival
-    if (g_nav_status.state == NAV_STATE_ARRIVED) {
-      step = 2;
-    }
-    break;
+  // 3. 计算目标角度 (atan2)
+  float aim_angle_rad = atan2f(dy_in, dx_in);
+  float aim_angle_deg = aim_angle_rad * 180.0f / M_PI;
 
-  case 2: // Waypoint 2: (40, 60) - Adjusted from 62 to prevent stuck
-    ESP_LOGI(TAG, "M1: Step 2 -> Nav to (40, 60)");
-    vive_nav_set_target_map(40, 60);
-    step = 3;
-    break;
+  ESP_LOGI(TAG, "Point&Shoot: Aiming at (%.1f, %.1f) from (%.1f, %.1f)",
+           target_x_in, target_y_in, pose.x, pose.y);
+  ESP_LOGI(TAG, "  -> Angle: %.1f deg", aim_angle_deg);
 
-  case 3: // Wait Arrival
-    if (g_nav_status.state == NAV_STATE_ARRIVED) {
-      step = 4;
-    }
-    break;
+  // 4. 转向瞄准
+  chassis_v2_turn_angle_blocking(aim_angle_deg);
+  vTaskDelay(pdMS_TO_TICKS(200)); // 稍作停顿稳定
 
-  case 4: // Align to +Y (+90 deg)
-  {
-    vive_nav_stop();
-    robot_pose_t pose = ekf_get_pose();
-    float target_rad = M_PI / 2.0f; // +90 deg
-    float diff_rad = target_rad - pose.theta;
-    while (diff_rad > M_PI)
-      diff_rad -= 2 * M_PI;
-    while (diff_rad < -M_PI)
-      diff_rad += 2 * M_PI;
+  // 5. 计算距离并冲刺
+  // Update pose after turn for better precision? Maybe unnecessary if turn is
+  // in-place.
+  float dist_in = sqrtf(dx_in * dx_in + dy_in * dy_in);
+  float dist_m = dist_in * 0.0254f; // Convert Inch to Meter
 
-    ESP_LOGI(TAG, "M1: Aligning to +90 deg. Diff: %.1f deg",
-             diff_rad * 180.0f / M_PI);
-    chassis_v2_turn_angle_blocking(diff_rad * 180.0f / M_PI, 60.0f);
-    step = 5;
-  } break;
+  float total_drive_m = dist_m + extra_run_m;
 
-  case 5: // Attack 15cm
-    ESP_LOGI(TAG, "M1: ATTACK! Forward 15cm");
-    chassis_v2_move_dist_blocking(0.15f, 0.1f);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    step = 6;
-    break;
+  ESP_LOGI(TAG, "  -> Dist: %.2fm + %.2fm = %.2fm", dist_m, extra_run_m,
+           total_drive_m);
 
-  case 6: // Retreat 15cm
-    ESP_LOGI(TAG, "M1: Retreat! Back 15cm");
-    chassis_v2_move_dist_blocking(-0.15f, 0.1f);
-    step = 7;
-    break;
+  chassis_v2_move_dist_blocking(total_drive_m, 0.15f); // 0.15m/s Attack
+  vTaskDelay(pdMS_TO_TICKS(200));
 
-  case 7: // Finish
-    ESP_LOGI(TAG, "M1: Mission Complete");
-    nav_mission_stop();
-    step = 0;
-    break;
+  // 6. 后退
+  if (retreat_dist_m > 0) {
+    ESP_LOGI(TAG, "  -> Retreat %.2fm", retreat_dist_m);
+    chassis_v2_move_dist_blocking(-retreat_dist_m, 0.15f);
   }
 }
 
-// M2: Low Tower Red (ID 2)
-static void run_mission_attack_low_tower_red() {
+// M1: Low Tower (Goal 0)
+// 撞击点设为灵活变量，默认为 (40, 65)
+static void run_mission_m1_low_tower() {
   static int step = 0;
+  // Configurable Target (Inches)
+  const float TARGET_X = 40.0f;
+  const float TARGET_Y = 65.0f;
+  const float EXTRA_M = 0.10f; // 10cm over-travel
 
-  // RESET LOGIC
-  if (g_mission_status.state == NAV_MISSION_STATE_GOTO_PRE_POINT) {
-    step = 0;
-    g_mission_status.state = NAV_MISSION_STATE_ALIGN_TOF; // Mark as running
-  }
-
-  nav_status_t g_nav_status;
-  vive_nav_get_status(&g_nav_status);
-
-  switch (step) {
-  case 0: // Waypoint 1: (27, 82)
-    ESP_LOGI(TAG, "M2: Step 0 -> Nav to (27, 82)");
-    vive_nav_set_target_map(27, 82);
-    step = 1;
-    break;
-
-  case 1: // Wait Arrival
-    if (g_nav_status.state == NAV_STATE_ARRIVED) {
-      step = 2;
-    }
-    break;
-
-  case 2: // Waypoint 2: (30, 51)
-    ESP_LOGI(TAG, "M2: Step 2 -> Nav to (30, 51)");
-    vive_nav_set_target_map(30, 51);
-    step = 3;
-    break;
-
-  case 3: // Wait Arrival
-    if (g_nav_status.state == NAV_STATE_ARRIVED) {
-      step = 4;
-    }
-    break;
-
-  case 4: // Align to -Y (-90 deg)
-  {
-    vive_nav_stop();
-    robot_pose_t pose = ekf_get_pose();
-    float target_rad = -M_PI / 2.0f; // -90 deg
-    float diff_rad = target_rad - pose.theta;
-    while (diff_rad > M_PI)
-      diff_rad -= 2 * M_PI;
-    while (diff_rad < -M_PI)
-      diff_rad += 2 * M_PI;
-
-    ESP_LOGI(TAG, "M2: Aligning to -90 deg. Diff: %.1f deg",
-             diff_rad * 180.0f / M_PI);
-    chassis_v2_turn_angle_blocking(diff_rad * 180.0f / M_PI, 60.0f);
-    step = 5;
-  } break;
-
-  case 5: // Attack 15cm
-    ESP_LOGI(TAG, "M2: ATTACK! Forward 15cm");
-    chassis_v2_move_dist_blocking(0.15f, 0.1f);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    step = 6;
-    break;
-
-  case 6: // Retreat 15cm
-    ESP_LOGI(TAG, "M2: Retreat! Back 15cm");
-    chassis_v2_move_dist_blocking(-0.15f, 0.1f);
-    step = 7;
-    break;
-
-  case 7: // Finish
-    ESP_LOGI(TAG, "M2: Mission Complete");
-    nav_mission_stop();
-    step = 0;
-    break;
-  }
-}
-
-// M3: Nexus Blue (ID 3)
-static void run_mission_attack_nexus_blue() {
-  static int step = 0;
-  static int attack_count = 0; // Added for repeat attack
-
-  // RESET LOGIC
-  if (g_mission_status.state == NAV_MISSION_STATE_GOTO_PRE_POINT) {
-    step = 0;
-    g_mission_status.state = NAV_MISSION_STATE_ALIGN_TOF; // Mark as running
-  }
-
-  nav_status_t g_nav_status;
-  vive_nav_get_status(&g_nav_status);
-
-  switch (step) {
-  case 0: // Waypoint 1: (40, 40)
-    ESP_LOGI(TAG, "M3: Step 0 -> Nav to (40, 40)");
-    vive_nav_set_target_map(40, 40);
-    step = 1;
-    break;
-
-  case 1: // Wait Arrival
-    if (g_nav_status.state == NAV_STATE_ARRIVED) {
-      step = 2;
-    }
-    break;
-
-  case 2: // Waypoint 2: (40, 30)
-    ESP_LOGI(TAG, "M3: Step 2 -> Nav to (40, 30)");
-    vive_nav_set_target_map(40, 30);
-    step = 3;
-    break;
-
-  case 3: // Wait Arrival
-    if (g_nav_status.state == NAV_STATE_ARRIVED) {
-      step = 4;
-    }
-    break;
-
-  case 4: // Precise Align Sequence (X-Fix then Attack Angle)
-  {
-    vive_nav_stop();
-
-    // 1. Turn to 0 deg (+X)
-    robot_pose_t pose = ekf_get_pose();
-    float diff_to_0 = 0.0f - pose.theta;
-    while (diff_to_0 > M_PI)
-      diff_to_0 -= 2 * M_PI;
-    while (diff_to_0 < -M_PI)
-      diff_to_0 += 2 * M_PI;
-    ESP_LOGI(TAG, "M3: Turn to 0 deg for X-Fix");
-    chassis_v2_turn_angle_blocking(diff_to_0 * 180.0f / M_PI, 60.0f);
-    vTaskDelay(pdMS_TO_TICKS(200));
-
-    // 2. Fix X Error
-    pose = ekf_get_pose();
-    float target_x_m = 40.0f * 0.0254f;
-    float x_err_m = target_x_m - pose.x;
-    ESP_LOGI(TAG, "M3: X-Fix Err: %.3fm", x_err_m);
-    if (fabs(x_err_m) > 0.01f) {
-      chassis_v2_move_dist_blocking(x_err_m, 0.1f);
-      vTaskDelay(pdMS_TO_TICKS(200));
-    }
-
-    // 3. Turn to -90 deg (-Y)
-    pose = ekf_get_pose();
-    float target_rad = -M_PI / 2.0f;
-    float diff_rad = target_rad - pose.theta;
-    while (diff_rad > M_PI)
-      diff_rad -= 2 * M_PI;
-    while (diff_rad < -M_PI)
-      diff_rad += 2 * M_PI;
-
-    ESP_LOGI(TAG, "M3: Final Align to -90 deg");
-    chassis_v2_turn_angle_blocking(diff_rad * 180.0f / M_PI, 60.0f);
-
-    attack_count = 0; // Reset counter
-    step = 5;
-  } break;
-
-  case 5: // Attack 5cm
-    ESP_LOGI(TAG, "M3: ATTACK! Forward 5cm (Round %d/4)", attack_count + 1);
-    chassis_v2_move_dist_blocking(0.05f, 0.1f);
-    vTaskDelay(pdMS_TO_TICKS(100)); // Short delay
-    step = 6;
-    break;
-
-  case 6: // Retreat 5cm
-    ESP_LOGI(TAG, "M3: Retreat! Back 5cm");
-    chassis_v2_move_dist_blocking(-0.05f, 0.1f); // Faster retreat
-    attack_count++;
-    if (attack_count < 4) {
-      step = 5; // Repeat
-    } else {
-      step = 7; // Done
-    }
-    break;
-
-  case 7: // Finish
-    ESP_LOGI(TAG, "M3: Mission Complete");
-    nav_mission_stop();
-    step = 0;
-    break;
-  }
-}
-
-// M4: Nexus Red (ID 4)
-static void run_mission_attack_nexus_red() {
-  static int step = 0;
-  static int attack_count = 0; // Added for repeat
-
-  // RESET LOGIC
-  if (g_mission_status.state == NAV_MISSION_STATE_GOTO_PRE_POINT) {
-    step = 0;
-    g_mission_status.state = NAV_MISSION_STATE_ALIGN_TOF; // Mark as running
-  }
-
-  nav_status_t g_nav_status;
-  vive_nav_get_status(&g_nav_status);
-
-  switch (step) {
-  case 0: // Waypoint 1: (40, 100)
-    ESP_LOGI(TAG, "M4: Step 0 -> Nav to (40, 100)");
-    vive_nav_set_target_map(40, 100);
-    step = 1;
-    break;
-
-  case 1: // Wait Arrival
-    if (g_nav_status.state == NAV_STATE_ARRIVED) {
-      step = 2;
-    }
-    break;
-
-  case 2: // Waypoint 2: (40, 115)
-    ESP_LOGI(TAG, "M4: Step 2 -> Nav to (40, 115)");
-    vive_nav_set_target_map(40, 115);
-    step = 3;
-    break;
-
-  case 3: // Wait Arrival
-    if (g_nav_status.state == NAV_STATE_ARRIVED) {
-      step = 4;
-    }
-    break;
-
-  case 4: // Precise Align Sequence (X-Fix then Attack Angle)
-  {
-    vive_nav_stop();
-
-    // 1. Turn to 0 deg (+X)
-    robot_pose_t pose = ekf_get_pose();
-    float diff_to_0 = 0.0f - pose.theta;
-    while (diff_to_0 > M_PI)
-      diff_to_0 -= 2 * M_PI;
-    while (diff_to_0 < -M_PI)
-      diff_to_0 += 2 * M_PI;
-    ESP_LOGI(TAG, "M4: Turn to 0 deg for X-Fix");
-    chassis_v2_turn_angle_blocking(diff_to_0 * 180.0f / M_PI, 60.0f);
-    vTaskDelay(pdMS_TO_TICKS(200));
-
-    // 2. Fix X Error
-    pose = ekf_get_pose();
-    float target_x_m = 40.0f * 0.0254f;
-    float x_err_m = target_x_m - pose.x;
-    ESP_LOGI(TAG, "M4: X-Fix Err: %.3fm", x_err_m);
-    if (fabs(x_err_m) > 0.01f) {
-      chassis_v2_move_dist_blocking(x_err_m, 0.1f);
-      vTaskDelay(pdMS_TO_TICKS(200));
-    }
-
-    // 3. Turn to +90 deg (+Y)
-    pose = ekf_get_pose();
-    float target_rad = M_PI / 2.0f;
-    float diff_rad = target_rad - pose.theta;
-    while (diff_rad > M_PI)
-      diff_rad -= 2 * M_PI;
-    while (diff_rad < -M_PI)
-      diff_rad += 2 * M_PI;
-
-    ESP_LOGI(TAG, "M4: Final Align to +90 deg");
-    chassis_v2_turn_angle_blocking(diff_rad * 180.0f / M_PI, 60.0f);
-
-    attack_count = 0; // Reset counter
-    step = 5;
-  } break;
-
-  case 5: // Attack 5cm
-    ESP_LOGI(TAG, "M4: ATTACK! Forward 5cm (Round %d/4)", attack_count + 1);
-    chassis_v2_move_dist_blocking(0.05f, 0.1f);
-    vTaskDelay(pdMS_TO_TICKS(100));
-    step = 6;
-    break;
-
-  case 6: // Retreat 5cm
-    ESP_LOGI(TAG, "M4: Retreat! Back 5cm");
-    chassis_v2_move_dist_blocking(-0.05f, 0.1f);
-    attack_count++;
-    if (attack_count < 4) {
-      step = 5;
-    } else {
-      step = 7;
-    }
-    break;
-
-  case 7: // Finish
-    ESP_LOGI(TAG, "M4: Mission Complete");
-    nav_mission_stop();
-    step = 0;
-    break;
-  }
-}
-
-// M5: Blue Challenge (ID 5)
-// Path: (23,117) -> (6.5,118) -> (9.3,53)[HighSpeed] -> Turn CW(-180) ->
-// Check -> Act -> Turn CCW(-90) -> (6.5,47) -> (24,46.5)
-static void run_mission_M5() {
-  static int step = 0;
-
-  // RESET LOGIC
   if (g_mission_status.state == NAV_MISSION_STATE_GOTO_PRE_POINT) {
     step = 0;
     g_mission_status.state = NAV_MISSION_STATE_ALIGN_TOF;
@@ -426,155 +128,126 @@ static void run_mission_M5() {
   vive_nav_get_status(&g_nav_status);
 
   switch (step) {
-  case 0: // Waypoint 1: Blue Point (9, 53) - Direct Travel
-    ESP_LOGI(TAG, "M5: Step 0 -> Nav to Blue Point (9, 53)");
-    vive_nav_set_target_map(9, 53);
+  case 0:
+    ESP_LOGI(TAG, "M1: Nav to (40, 40)");
+    vive_nav_set_target_map(40, 40);
     step = 1;
     break;
-
-  case 1: // Wait Arrival
-    if (g_nav_status.state == NAV_STATE_ARRIVED) {
-      step = 2;
-    }
-    break;
-
-  case 2: // Turn CW 90
-    ESP_LOGI(TAG, "M5: Turn CW 90");
-    vive_nav_stop();
-    chassis_v2_turn_angle_blocking(-90.0f, 60.0f);
-    step = 3;
-    break;
-
-  case 3: // Attack
-    ESP_LOGI(TAG, "M5: Attack (6cm)");
-    chassis_v2_move_dist_blocking(0.06f, 0.1f);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    step = 5; // Go to Finish (Skip Retreat)
-    break;
-
-  case 5: // Finish
-    ESP_LOGI(TAG, "M5 Complete");
-    nav_mission_stop();
-    step = 0;
-    break;
-  }
-}
-
-// M6: Red Challenge (ID 6)
-// Path: (24,46.5) -> (6.5,47) -> (5.8,78)[HighSpeed] -> Turn CCW -> Check
-// -> Act -> Turn CW -> (6.5,118) -> (23,117)
-static void run_mission_M6() {
-  static int step = 0;
-
-  // RESET LOGIC
-  if (g_mission_status.state == NAV_MISSION_STATE_GOTO_PRE_POINT) {
-    step = 0;
-    g_mission_status.state = NAV_MISSION_STATE_ALIGN_TOF;
-  }
-
-  nav_status_t g_nav_status;
-  vive_nav_get_status(&g_nav_status);
-
-  switch (step) {
-  case 0: // Waypoint 1: (8.4, 46.5) -> (8, 46) Left Lower Entry
-    ESP_LOGI(TAG, "M6: Step 0 -> Nav to (8, 46)");
-    vive_nav_set_target_map(8, 46);
-    step = 1;
-    break;
-
   case 1:
     if (g_nav_status.state == NAV_STATE_ARRIVED)
       step = 2;
     break;
-
-  case 2: // Waypoint 2: (6.5, 47) Left Lower Slope
-    ESP_LOGI(TAG, "M6: Step 2 -> Nav to (6.5, 47)");
-    vive_nav_set_target_map(6, 47);
+  case 2: // Waypoint 2: Stop close to target
+    ESP_LOGI(TAG, "M1: Nav to (40, 60)");
+    vive_nav_set_target_map(40, 60);
     step = 3;
     break;
-
   case 3:
     if (g_nav_status.state == NAV_STATE_ARRIVED)
       step = 4;
     break;
-
-  case 4: // Waypoint 3: (5.8, 78) Red Point [HighSpeed]
-    ESP_LOGI(TAG, "M6: Step 4 -> Nav to (5.8, 78)");
-    // Speed up removed
-    vive_nav_set_target_map(6, 78);
-    step = 5;
-    break;
-
-  case 5:
-    if (g_nav_status.state == NAV_STATE_ARRIVED) {
-      step = 6;
-    }
-    break;
-
-  case 6: // Turn CCW 90 deg. Current +90 (+Y). Goal 180 (-X).
-    ESP_LOGI(TAG, "M6: Turn CCW 90");
-    chassis_v2_turn_angle_blocking(90.0f, 60.0f);
-    step = 7;
-    break;
-
-  case 7: // Check Heading (-X -> 180). Tol 15 deg.
-  {
+  case 4: // Dynamic Aim & Attack
     vive_nav_stop();
-    robot_pose_t pose = ekf_get_pose();
-    float target_rad = M_PI; // 180 deg
-    float diff_rad = target_rad - pose.theta;
-    while (diff_rad > M_PI)
-      diff_rad -= 2 * M_PI;
-    while (diff_rad < -M_PI)
-      diff_rad += 2 * M_PI;
+    mission_point_and_shoot_inch(TARGET_X, TARGET_Y, EXTRA_M, 0.15f);
 
-    float err_deg = diff_rad * 180.0f / M_PI;
-    ESP_LOGI(TAG, "M6: Checking Heading -X. Err: %.1f", err_deg);
-
-    if (fabs(err_deg) > 15.0f) {
-      ESP_LOGI(TAG, "M6: Correcting Heading...");
-      chassis_v2_turn_angle_blocking(err_deg, 45.0f);
-    }
-    step = 8;
-  } break;
-
-  case 8: // Action: Fwd 4cm, Back 4cm
-    ESP_LOGI(TAG, "M6: Action 4cm");
-    chassis_v2_move_dist_blocking(0.04f, 0.1f);
-    chassis_v2_move_dist_blocking(-0.04f, 0.1f);
-    step = 9;
+    ESP_LOGI(TAG, "M1: Complete");
+    nav_mission_stop();
+    step = 0;
     break;
+  }
+}
 
-  case 9: // Turn CW 90 (-90). Target back to +90.
-    ESP_LOGI(TAG, "M6: Turn CW 90");
-    chassis_v2_turn_angle_blocking(-90.0f, 60.0f);
-    step = 10;
+// M2: Navigate to (41, 29) and Stop
+static void run_mission_m2_nexus() {
+  static int step = 0;
+
+  if (g_mission_status.state == NAV_MISSION_STATE_GOTO_PRE_POINT) {
+    step = 0;
+    g_mission_status.state = NAV_MISSION_STATE_ALIGN_TOF;
+  }
+
+  nav_status_t g_nav_status;
+  vive_nav_get_status(&g_nav_status);
+
+  switch (step) {
+  case 0:
+    ESP_LOGI(TAG, "M2: Nav to (41, 29)");
+    vive_nav_set_target_map(41, 29);
+    step = 1;
     break;
-
-  case 10: // Waypoint 4: (6.5, 118) Left Upper Slope
-    ESP_LOGI(TAG, "M6: Step 10 -> Nav to (6.5, 118)");
-    vive_nav_set_target_map(6, 118);
-    step = 11;
-    break;
-
-  case 11:
-    if (g_nav_status.state == NAV_STATE_ARRIVED)
-      step = 12;
-    break;
-
-  case 12: // Waypoint 5: (23, 117) Left Upper Entry
-    ESP_LOGI(TAG, "M6: Step 12 -> Nav to (23, 117)");
-    vive_nav_set_target_map(23, 117);
-    step = 13;
-    break;
-
-  case 13:
+  case 1:
     if (g_nav_status.state == NAV_STATE_ARRIVED) {
-      ESP_LOGI(TAG, "M6 Complete");
+      vive_nav_stop();
+      ESP_LOGI(TAG, "M2: Arrived at (41, 29). Complete.");
       nav_mission_stop();
+      step = 0;
     }
     break;
   }
+}
+
+// M3: High Tower (Goal 2)
+// Strategy: From North (Y=88), Rush Down South to Y=72, Turn Right, Attack Wall
+// (X=0)
+// M3: New Goal -> (8, 55) (High Tower / Ramp Area)
+static void run_mission_m3_high_tower() {
+  static int step = 0;
+
+  if (g_mission_status.state == NAV_MISSION_STATE_GOTO_PRE_POINT) {
+    step = 0;
+    g_mission_status.state = NAV_MISSION_STATE_ALIGN_TOF;
+  }
+
+  nav_status_t g_nav_status;
+  vive_nav_get_status(&g_nav_status);
+
+  switch (step) {
+  case 0:
+    ESP_LOGI(TAG, "M3: Nav to (8, 55)");
+    vive_nav_set_target_map(8, 55);
+    step = 1;
+    break;
+  case 1:
+    if (g_nav_status.state == NAV_STATE_ARRIVED) {
+      vive_nav_stop();
+      ESP_LOGI(TAG, "M3: Arrived at (8, 55). Complete.");
+      nav_mission_stop();
+      step = 0;
+    }
+    break;
+  }
+}
+// M4: Complex (Goal 3) - Placeholder
+static void run_mission_m4_complex() {
+  // Define complex logic here
+  ESP_LOGI(TAG, "M4 (Complex): Start");
+  // Example: Square
+  chassis_v2_move_dist_blocking(0.2f, 0.1f);
+  chassis_v2_turn_angle_blocking(90.0f);
+  chassis_v2_move_dist_blocking(0.2f, 0.1f);
+  chassis_v2_turn_angle_blocking(180.0f);
+  chassis_v2_move_dist_blocking(0.2f, 0.1f);
+  chassis_v2_turn_angle_blocking(-90.0f);
+  chassis_v2_move_dist_blocking(0.2f, 0.1f);
+  ESP_LOGI(TAG, "M4: Complete");
+  nav_mission_stop();
+}
+
+// M5: Dash (Goal 4)
+static void run_mission_m5_dash() {
+  ESP_LOGI(TAG, "M5 (Dash): Move 0.08m");
+  chassis_v2_move_dist_blocking(0.08f, 0.1f);
+  ESP_LOGI(TAG, "M5: Complete");
+  nav_mission_stop();
+}
+
+// M6: Turn 90 (Goal 5)
+// Target Heading 90
+static void run_mission_m6_turn() {
+  ESP_LOGI(TAG, "M6 (Turn 90): Turning to 90 deg");
+  chassis_v2_turn_angle_blocking(90.0f);
+  ESP_LOGI(TAG, "M6: Complete");
+  nav_mission_stop();
 }
 
 // ==========================================
@@ -590,23 +263,23 @@ static void nav_mission_task(void *pvParameters) {
 
       // Dispatch Mission
       switch (g_mission_status.goal_id) {
-      case NAV_GOAL_0: // Low Tower Blue (Web Button 0)
-        run_mission_attack_low_tower_blue();
+      case NAV_GOAL_0:
+        run_mission_m1_low_tower();
         break;
-      case NAV_GOAL_1: // Low Tower Red (Web Button 1)
-        run_mission_attack_low_tower_red();
+      case NAV_GOAL_1:
+        run_mission_m2_nexus();
         break;
-      case NAV_GOAL_2: // Nexus Blue (Web Button 2)
-        run_mission_attack_nexus_blue();
+      case NAV_GOAL_2:
+        run_mission_m3_high_tower();
         break;
-      case NAV_GOAL_3: // Nexus Red (Web Button 3)
-        run_mission_attack_nexus_red();
+      case NAV_GOAL_3:
+        run_mission_m4_complex();
         break;
-      case NAV_GOAL_4: // Blue Challenge (Web Button 4)
-        run_mission_M5();
+      case NAV_GOAL_4:
+        run_mission_m5_dash();
         break;
-      case NAV_GOAL_5: // Red Challenge (Web Button 5)
-        run_mission_M6();
+      case NAV_GOAL_5:
+        run_mission_m6_turn();
         break;
       default:
         ESP_LOGW(TAG, "Unknown Mission Goal: %d", g_mission_status.goal_id);

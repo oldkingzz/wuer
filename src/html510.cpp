@@ -565,22 +565,31 @@ static esp_err_t get_sensor_data_handler(httpd_req_t *req) {
   bool vive2_valid = vive_sensor2_is_valid();
 
   // Get wall following status
-  wf2_status_t wf_status;
+  wf_status_t wf_status;
   bool wf_available = (wall_following_v2_get_status(&wf_status) == ESP_OK);
   const char *wf_state_str = "IDLE";
   if (wf_available) {
     switch (wf_status.state) {
-    case WF2_IDLE:
+    case WF_STATE_IDLE:
       wf_state_str = "IDLE";
       break;
-    case WF2_INIT:
-      wf_state_str = "INIT";
+    case WF_STATE_FOLLOW_WALL:
+      wf_state_str = "FOLLOW_WALL";
       break;
-    case WF2_RUNNING:
-      wf_state_str = "RUNNING";
+    case WF_STATE_CONVEX_CORNER:
+      wf_state_str = "CONVEX_CORNER";
       break;
-    case WF2_STOPPED:
-      wf_state_str = "STOPPED";
+    case WF_STATE_FRONT_BLOCKED:
+      wf_state_str = "FRONT_BLOCKED";
+      break;
+    case WF_STATE_RAMP:
+      wf_state_str = "RAMP";
+      break;
+    case WF_STATE_DONE:
+      wf_state_str = "DONE";
+      break;
+    case WF_STATE_ERROR:
+      wf_state_str = "ERROR";
       break;
     default:
       wf_state_str = "UNKNOWN";
@@ -633,10 +642,29 @@ static esp_err_t start_wall_follow_handler(httpd_req_t *req) {
   g_chassis_linear_velocity = 0.0f;
   g_chassis_angular_velocity = 0.0f;
 
-  esp_err_t ret = wall_following_v2_start();
+  // 由于 wall_following_v2_start() 是阻塞的，需要在单独任务中启动
+  static TaskHandle_t s_wf_task = NULL;
+
+  // 检查是否已经在运行
+  if (s_wf_task != NULL && eTaskGetState(s_wf_task) != eDeleted) {
+    ESP_LOGW(TAG, "Wall following task already running");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, "ALREADY_RUNNING", 15);
+    return ESP_OK;
+  }
+
+  // 创建任务运行阻塞式 wall following
+  BaseType_t ret = xTaskCreatePinnedToCore(
+      [](void *param) {
+        wall_following_v2_run_blocking();
+        // 任务完成后，重新启用手动控制
+        g_manual_control_enabled = true;
+        vTaskDelete(NULL);
+      },
+      "wf_runner", 4096, NULL, 4, &s_wf_task, 1);
 
   httpd_resp_set_type(req, "text/plain");
-  if (ret == ESP_OK) {
+  if (ret == pdPASS) {
     httpd_resp_send(req, "OK", 2);
   } else {
     httpd_resp_send(req, "FAIL", 4);
@@ -672,33 +700,28 @@ static esp_err_t stop_wall_follow_handler(httpd_req_t *req) {
  */
 static esp_err_t get_wall_follow_status_handler(httpd_req_t *req) {
   char json_response[320];
-  wf2_status_t status;
+  wf_status_t status;
 
   esp_err_t ret = wall_following_v2_get_status(&status);
   if (ret != ESP_OK) {
     snprintf(json_response, sizeof(json_response),
              "{\"state\":\"ERROR\",\"is_running\":false}");
   } else {
-    // Convert integer enums to string if needed, or just send raw
-    // Here we send raw integers for simplicity since the web JS just displays
-    // state
-
     snprintf(json_response, sizeof(json_response),
              "{"
              "\"state\":%d,"
              "\"is_running\":%s,"
              "\"tof_front\":%u,"
-             "\"tof_left\":0,"
              "\"tof_right\":%u,"
              "\"heading\":%.1f,"
-             "\"target_heading\":0.0,"
-             "\"distance\":0.0,"
-             "\"pos_x\":%.1f,"
-             "\"pos_y\":%.1f"
+             "\"elapsed_ms\":%lu,"
+             "\"pos_x\":%.2f,"
+             "\"pos_y\":%.2f"
              "}",
              (int)status.state, status.is_running ? "true" : "false",
-             status.tof_front, status.tof_right, status.current_heading,
-             status.current_x, status.current_y);
+             status.tof_front_mm, status.tof_right_mm,
+             status.odo_heading_rad * 180.0f / 3.14159f,
+             (unsigned long)status.elapsed_ms, status.odo_x_m, status.odo_y_m);
   }
 
   httpd_resp_set_type(req, "application/json");
@@ -734,6 +757,49 @@ static const httpd_uri_t get_nav_status = {.uri = "/getNavStatus",
                                            .method = HTTP_GET,
                                            .handler = get_nav_status_handler,
                                            .user_ctx = NULL};
+
+/**
+ * @brief HTTP GET handler for setNavGoalPulse endpoint
+ * Usage: /setNavGoalPulse?x=5000&y=4000
+ */
+static esp_err_t set_nav_goal_pulse_handler(httpd_req_t *req) {
+  char buf[200];
+  size_t buf_len;
+
+  buf_len = httpd_req_get_url_query_len(req) + 1;
+  if (buf_len > 1) {
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+      char x_param[32];
+      char y_param[32];
+
+      if (httpd_query_key_value(buf, "x", x_param, sizeof(x_param)) == ESP_OK &&
+          httpd_query_key_value(buf, "y", y_param, sizeof(y_param)) == ESP_OK) {
+
+        int pulse_x = atoi(x_param);
+        int pulse_y = atoi(y_param);
+
+        ESP_LOGI(TAG, "Setting Pulse Nav Goal: (%d, %d)", pulse_x, pulse_y);
+
+        // Use the native Vive coordinate setter
+        // vive_nav_set_target accepts raw pulse coordinates (0-8191)
+        if (vive_nav_set_target((uint16_t)pulse_x, (uint16_t)pulse_y) ==
+            ESP_OK) {
+          vive_nav_start();
+        }
+      }
+    }
+  }
+
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_send(req, "OK", 2);
+  return ESP_OK;
+}
+
+static const httpd_uri_t set_nav_goal_pulse = {.uri = "/setNavGoalPulse",
+                                               .method = HTTP_GET,
+                                               .handler =
+                                                   set_nav_goal_pulse_handler,
+                                               .user_ctx = NULL};
 
 static const httpd_uri_t stop_nav = {.uri = "/stopNav",
                                      .method = HTTP_GET,

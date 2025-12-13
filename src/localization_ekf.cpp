@@ -109,19 +109,32 @@ void ekf_predict(float d_left, float d_right) {
 
 // 3. Update Step (Vive Correction)
 void ekf_update_vive(float z_x, float z_y, float z_theta) {
-  // We treat each measurement (X, Y, Theta) independently to simplify matrix
-  // inversion to scalar division (Inverse Variance weighting). This is valid if
-  // measurement noises are uncorrelated.
+  // Adaptive R (Measurement Noise)
+  // Central Zone (Y: 45-95): High Trust (Low R)
+  // Edge Zone: Low Trust (High R)
+  float curr_R_X, curr_R_Y, curr_R_THETA;
+
+  if (z_y >= 45.0f && z_y <= 95.0f) {
+    // High Trust
+    curr_R_X = 0.5f;
+    curr_R_Y = 0.5f;
+    curr_R_THETA = 0.3f;
+  } else {
+    // Low Trust (Edge)
+    curr_R_X = 3.0f; // Increased slightly from 2.0 to be safer
+    curr_R_Y = 3.0f;
+    curr_R_THETA = 2.0f;
+  }
 
   // --- Update X ---
-  float S_x = g_P[0][0] + R_X;          // Innovation covariance
-  float K_x = g_P[0][0] / S_x;          // Kalman Gain
-  float y_x = z_x - g_x.x;              // Innovation (Measurement Residual)
-  g_x.x += K_x * y_x;                   // Update State
-  g_P[0][0] = (1.0f - K_x) * g_P[0][0]; // Update Covariance
+  float S_x = g_P[0][0] + curr_R_X;
+  float K_x = g_P[0][0] / S_x;
+  float y_x = z_x - g_x.x;
+  g_x.x += K_x * y_x;
+  g_P[0][0] = (1.0f - K_x) * g_P[0][0];
 
   // --- Update Y ---
-  float S_y = g_P[1][1] + R_Y;
+  float S_y = g_P[1][1] + curr_R_Y;
   float K_y = g_P[1][1] / S_y;
   float y_y = z_y - g_x.y;
   g_x.y += K_y * y_y;
@@ -129,9 +142,9 @@ void ekf_update_vive(float z_x, float z_y, float z_theta) {
 
   // --- Update Theta (if valid) ---
   if (!isnan(z_theta)) {
-    float S_t = g_P[2][2] + R_THETA;
+    float S_t = g_P[2][2] + curr_R_THETA;
     float K_t = g_P[2][2] / S_t;
-    float y_t = normalize_angle(z_theta - g_x.theta); // Important: Angle diff!
+    float y_t = normalize_angle(z_theta - g_x.theta);
     g_x.theta = normalize_angle(g_x.theta + K_t * y_t);
     g_P[2][2] = (1.0f - K_t) * g_P[2][2];
   }

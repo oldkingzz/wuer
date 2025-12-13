@@ -15,7 +15,7 @@ extern "C" {
 
 // ========== Constants ==========
 
-#define CHASSIS_V2_WHEEL_DIAMETER_M 0.065f
+#define CHASSIS_V2_WHEEL_DIAMETER_M 0.105f
 #define CHASSIS_V2_WHEEL_BASE_M 0.15f
 #define CHASSIS_V2_MAX_LINEAR_VEL 0.5f  // m/s
 #define CHASSIS_V2_MAX_ANGULAR_VEL 2.0f // rad/s
@@ -93,14 +93,13 @@ esp_err_t chassis_v2_get_wheel_dist_m(float *left_total, float *right_total);
 esp_err_t chassis_v2_move_dist_blocking(float dist_m, float speed_m_s);
 
 /**
- * @brief Blocking rotate for fixed angle (using encoders)
+ * @brief Turn to absolute heading using PID control (Blocking)
  *
- * @param angle_deg Angle to rotate in degrees (positive = counter-clockwise,
- * negative = clockwise)
- * @param speed_deg_s Rotation speed in deg/s (must be positive)
+ * @param target_heading_deg Target absolute heading in degrees (0 = East/X+, 90
+ * = North/Y+)
  * @return ESP_OK on success
  */
-esp_err_t chassis_v2_turn_angle_blocking(float angle_deg, float speed_deg_s);
+esp_err_t chassis_v2_turn_angle_blocking(float target_heading_deg);
 
 #ifdef __cplusplus
 }

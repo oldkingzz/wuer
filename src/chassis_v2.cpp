@@ -40,7 +40,7 @@ static const char *TAG = "CHASSIS_V2";
 
 // 底盘物理参数
 #define WHEEL_BASE_M 0.15f      // 轮距 (m)
-#define WHEEL_DIAMETER_M 0.065f // 轮径 (m)
+#define WHEEL_DIAMETER_M 0.105f // 轮径 (m) - 105mm 直径轮
 #define MAX_LINEAR_VEL 0.5f     // 最大线速度 (m/s)
 #define MAX_ANGULAR_VEL 2.0f    // 最大角速度 (rad/s)
 #define MAX_WHEEL_RPM 150.0f    // 最大轮速 (RPM)
@@ -449,70 +449,71 @@ esp_err_t chassis_v2_move_dist_blocking(float dist_m, float speed_m_s) {
   return ESP_OK;
 }
 
-esp_err_t chassis_v2_turn_angle_blocking(float angle_deg, float speed_deg_s) {
-  if (speed_deg_s < 0)
-    speed_deg_s = -speed_deg_s;
-  if (fabs(angle_deg) < 1.0f)
-    return ESP_OK;
+esp_err_t chassis_v2_turn_angle_blocking(float target_heading_deg) {
+  const float KP = 2.5f;               // Proportional gain
+  const float MAX_SPEED_DEG_S = 90.0f; // Limit max rotation speed
+  const float TOLERANCE_DEG = 2.0f;    // Angle tolerance
+  const int STABLE_COUNT_REQ = 5;      // Number of stable cycles to exit
+  const int TIMEOUT_MS = 5000;         // Max time
 
-  // Convert angle to pulses
-  // Arc length L = (angle_deg / 360) * PI * WHEEL_BASE
-  // Pulses = L / (PI * WHEEL_DIAMETER) * CPR
-  //        = (angle/360 * PI * WB) / (PI * WD) * CPR
-  //        = (angle/360) * (WB/WD) * CPR
+  ESP_LOGI(TAG, "Blocking Turn PID -> Target: %.1f deg", target_heading_deg);
 
-  float ratio = WHEEL_BASE_M / WHEEL_DIAMETER_M;
-  float rotations = fabsf(angle_deg) / 360.0f;
-  float wheel_rotations = rotations * ratio;
-  int32_t target_pulses = (int32_t)(wheel_rotations * ENCODER_CPR);
-
-  int32_t start_p1 = encoder_get_count();
-  int32_t start_p2 = encoder2_get_count();
-
-  ESP_LOGI(TAG, "Blocking Turn: %.1f deg -> %ld pulses. WB/WD=%.2f", angle_deg,
-           (long)target_pulses, ratio);
-
-  // Speed in rad/s for chassis set velocity
-  // speed_deg_s -> rad/s
-  float speed_rad_s = speed_deg_s * M_PI / 180.0f;
-
-  // Direction: Positive Angle (CCW) -> Positive Angular Vel
-  float direction = (angle_deg > 0) ? 1.0f : -1.0f;
-
-  chassis_v2_set_velocity(0.0f, direction * speed_rad_s);
-
-  int timeout_ms = 5000;
+  int stable_count = 0;
   int elapsed = 0;
+  const int loops_ms = 20; // 20ms update
 
-  while (elapsed < timeout_ms) {
-    int32_t curr_p1 = encoder_get_count();
-    int32_t curr_p2 = encoder2_get_count();
+  while (elapsed < TIMEOUT_MS) {
+    // 1. Get current heading (deg)
+    float current_theta_deg = g_odom.theta * 180.0f / M_PI;
 
-    // Turns are differential: One wheel fwd, one back.
-    // Total delta = (|dp1| + |dp2|) / 2 ? No.
-    // Left wheel turns -X, Right turns +X.
-    // Just sum absolute deltas for safety.
-    int32_t diff1 = abs(curr_p1 - start_p1);
-    int32_t diff2 = abs(curr_p2 - start_p2);
-    int32_t avg_diff = (diff1 + diff2) / 2;
+    // 2. Calculate Error (Shortest path)
+    float error = target_heading_deg - current_theta_deg;
+    while (error > 180.0f)
+      error -= 360.0f;
+    while (error < -180.0f)
+      error += 360.0f;
 
-    if (avg_diff >= target_pulses) {
-      break;
+    // 3. Check exit condition
+    if (fabs(error) < TOLERANCE_DEG) {
+      stable_count++;
+      if (stable_count >= STABLE_COUNT_REQ) {
+        ESP_LOGI(TAG, "Turn Reached. Err: %.2f", error);
+        break;
+      }
+    } else {
+      stable_count = 0;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(10));
-    elapsed += 10;
+    // 4. PID Control
+    float speed_cmd = error * KP;
+
+    // 5. Clamp Speed
+    if (speed_cmd > MAX_SPEED_DEG_S)
+      speed_cmd = MAX_SPEED_DEG_S;
+    if (speed_cmd < -MAX_SPEED_DEG_S)
+      speed_cmd = -MAX_SPEED_DEG_S;
+
+    // Min start speed to overcome friction
+    if (speed_cmd > 0 && speed_cmd < 15.0f)
+      speed_cmd = 15.0f;
+    if (speed_cmd < 0 && speed_cmd > -15.0f)
+      speed_cmd = -15.0f;
+
+    // 6. Actuate (Convert deg/s to rad/s for set_velocity)
+    // Positive speed = CCW (Left)
+    float speed_rad_s = speed_cmd * M_PI / 180.0f;
+    chassis_v2_set_velocity(0.0f, speed_rad_s);
+
+    // 7. Wait
+    vTaskDelay(pdMS_TO_TICKS(loops_ms));
+    elapsed += loops_ms;
   }
 
   chassis_v2_stop();
-  if (elapsed >= timeout_ms) {
+
+  if (elapsed >= TIMEOUT_MS) {
     ESP_LOGW(TAG, "Blocking Turn TIMEOUT");
   }
-  ESP_LOGI(TAG, "Blocking Turn Done. Diff: %ld / %ld",
-           (long)((abs(encoder_get_count() - start_p1) +
-                   abs(encoder2_get_count() - start_p2)) /
-                  2),
-           (long)target_pulses);
 
   return ESP_OK;
 }

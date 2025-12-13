@@ -43,7 +43,7 @@ esp_err_t tophat_init(void) {
   if (g_tophat_inited)
     return ESP_OK;
 
-  Serial.println("[TOPHAT] Initializing Tophat (0x28)...");
+  // Serial.println("[TOPHAT] Initializing Tophat (0x28)...");
 
   // 1. Try Direct Communication first
   i2c_bus_lock();
@@ -62,16 +62,16 @@ esp_err_t tophat_init(void) {
   i2c_bus_unlock();
 
   if (ret == 0) {
-    Serial.println("[TOPHAT] Found Tophat on Main Bus!");
+    // Serial.println("[TOPHAT] Found Tophat on Main Bus!");
     g_tophat_inited = true;
     g_tophat_channel = -1; // -1 indicates Direct/Main Bus
     return ESP_OK;
   } else {
-    Serial.printf("[TOPHAT] Direct Scan Failed. Error Code: %d\n", ret);
+    // Serial.printf("[TOPHAT] Direct Scan Failed. Error Code: %d\n", ret);
   }
 
   // 2. If direct failed, try scanning TCA channels
-  Serial.println("[TOPHAT] Direct access failed, scanning TCA channels...");
+  // Serial.println("[TOPHAT] Direct access failed, scanning TCA channels...");
   for (uint8_t ch = 0; ch < 8; ch++) {
     i2c_bus_lock();
 
@@ -90,20 +90,20 @@ esp_err_t tophat_init(void) {
     i2c_bus_unlock();
 
     if (ret == 0) {
-      Serial.printf("[TOPHAT] Found Tophat on TCA Channel %d!\n", ch);
+      // Serial.printf("[TOPHAT] Found Tophat on TCA Channel %d!\n", ch);
       g_tophat_channel = ch;
       g_tophat_inited = true;
       return ESP_OK;
     }
   }
 
-  Serial.println("[TOPHAT] ERROR: Tophat NOT found!");
+  // Serial.println("[TOPHAT] ERROR: Tophat NOT found!");
   return ESP_FAIL;
 }
 
 esp_err_t tophat_send_heartbeat(uint32_t packet_count) {
   if (!g_tophat_inited) {
-    Serial.println("[TOPHAT] Not inited!");
+    // Serial.println("[TOPHAT] Not inited!");
     return ESP_FAIL;
   }
 
@@ -118,7 +118,7 @@ esp_err_t tophat_send_heartbeat(uint32_t packet_count) {
     Wire.write(1 << g_tophat_channel);
     if (Wire.endTransmission() != 0) {
       i2c_bus_unlock();
-      Serial.println("[TOPHAT] TCA Select Failed in heartbeat func");
+      // Serial.println("[TOPHAT] TCA Select Failed in heartbeat func");
       return ESP_FAIL;
     }
   }
@@ -130,7 +130,7 @@ esp_err_t tophat_send_heartbeat(uint32_t packet_count) {
 
   if (write_ret != 0) {
     i2c_bus_unlock();
-    Serial.printf("[TOPHAT] Failed to write heartbeat! Ret=%d\n", write_ret);
+    // Serial.printf("[TOPHAT] Failed to write heartbeat! Ret=%d\n", write_ret);
     return ESP_FAIL;
   }
 
@@ -151,7 +151,7 @@ esp_err_t tophat_send_heartbeat(uint32_t packet_count) {
     static uint8_t last_status = 255;
     if (status == 0) {
       if (!g_is_penalized) {
-        Serial.println("[TOPHAT] Health dropped to 0! PENALTY START.");
+        // Serial.println("[TOPHAT] Health dropped to 0! PENALTY START.");
         g_is_penalized = true;
         g_penalty_start_time = millis();
       }
@@ -159,7 +159,7 @@ esp_err_t tophat_send_heartbeat(uint32_t packet_count) {
     last_status = status;
     return ESP_OK;
   } else {
-    Serial.println("[TOPHAT] Failed to read health!");
+    // Serial.println("[TOPHAT] Failed to read health!");
     return ESP_FAIL;
   }
 }

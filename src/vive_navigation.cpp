@@ -32,13 +32,14 @@ static const char *TAG = "NAV";
 #define NAV_YAW_Align_TOLERANCE 0.1f  // ~5.7 degrees
 
 // USE CONSTANT VELOCITY FROM V2 MACROS
-// 用户要求降低线速度到 0.1 以保证安全
-#define NAV_CONST_LINEAR_SPEED 0.10f // Reduced from 0.5
+// 用户要求 (0.25太快 -> 0.20)
+#define NAV_CONST_LINEAR_SPEED 0.20f
 
 #define NAV_TURN_SPEED 1.5f // rad/s
 
 // PID Parameters for Heading
-#define PID_KP_YAW 0.8f // Moderate gain (0.6 -> 0.8)
+// 0.2m/s 对应 Kp=1.2 (适中)
+#define PID_KP_YAW 1.2f
 
 // ==========================================
 // Global State
@@ -46,12 +47,10 @@ static const char *TAG = "NAV";
 static vive_pose_t g_current_pose = {0, 0, 0.0f, false};
 static bool g_has_first_fix = false;
 
-// Auto-Routing State for Via-Point (28, 69)
+// Auto-Routing State for Via-Point Sequence
 static bool s_has_pending_final = false;
 static int16_t s_pending_final_x = 0;
 static int16_t s_pending_final_y = 0;
-const int16_t VIA_POINT_X = 28;
-const int16_t VIA_POINT_Y = 69;
 
 // Navigation State
 static nav_status_t g_nav_status = {.state = NAV_STATE_IDLE};
@@ -212,10 +211,8 @@ static void update_motion_control_step(void) {
 
   if (dist_finish < NAV_GOAL_TOLERANCE_INCH) {
     if (s_has_pending_final) {
-      ESP_LOGI(
-          TAG,
-          "Via-Point (28, 69) Reached! Continuing to Final Goal (%d, %d)...",
-          s_pending_final_x, s_pending_final_y);
+      ESP_LOGI(TAG, "Via-Point Reached! Continuing to Next Goal (%d, %d)...",
+               s_pending_final_x, s_pending_final_y);
       // Trigger next leg immediately
       int16_t next_x = s_pending_final_x;
       int16_t next_y = s_pending_final_y;
@@ -406,26 +403,57 @@ esp_err_t vive_nav_set_target_map(int16_t map_x, int16_t map_y) {
 
   bool uses_via_point = false;
   if (!s_has_pending_final) { // Only check for fresh commands
-    bool start_upper = (start.y > 69.0f);
-    bool target_upper = (map_y > 69);
+    // Define Threshold and Via Points
+    const int16_t SPLIT_Y = 73;
+    const int16_t VIA_UPPER_X = 30;
+    const int16_t VIA_UPPER_Y = 80;
+    const int16_t VIA_LOWER_X = 30;
+    const int16_t VIA_LOWER_Y = 66;
 
-    float dist_to_via =
-        sqrtf(powf(start.x - VIA_POINT_X, 2) + powf(start.y - VIA_POINT_Y, 2));
+    bool start_upper = (start.y > SPLIT_Y);
+    bool target_upper = (map_y > SPLIT_Y);
 
-    if (start_upper != target_upper && dist_to_via > 8.0f) {
-      Serial.printf(
-          "NAV: Zone Crossing Detected! Routing via (%d, %d) first.\n",
-          VIA_POINT_X, VIA_POINT_Y);
+    if (start_upper != target_upper) {
+      // Crossing Zones Detected.
+      // Logic: Start -> Entry Via -> Exit Via -> Final
 
-      // Store Real Target
-      s_pending_final_x = map_x;
-      s_pending_final_y = map_y;
-      s_has_pending_final = true;
+      int16_t entry_x = start_upper ? VIA_UPPER_X : VIA_LOWER_X;
+      int16_t entry_y = start_upper ? VIA_UPPER_Y : VIA_LOWER_Y;
 
-      // Hijack Target
-      map_x = VIA_POINT_X;
-      map_y = VIA_POINT_Y;
-      uses_via_point = true;
+      int16_t exit_x = start_upper ? VIA_LOWER_X : VIA_UPPER_X;
+      int16_t exit_y = start_upper ? VIA_LOWER_Y : VIA_UPPER_Y;
+
+      float dist_to_entry =
+          sqrtf(powf(start.x - entry_x, 2) + powf(start.y - entry_y, 2));
+
+      float dist_to_exit =
+          sqrtf(powf(start.x - exit_x, 2) + powf(start.y - exit_y, 2));
+
+      // 1. If not at Entry yet, go to Entry
+      if (dist_to_entry > 8.0f) {
+        Serial.printf("NAV: Crossing Zone. Step 1: Go to Entry (%d, %d)\n",
+                      entry_x, entry_y);
+        s_pending_final_x = map_x;
+        s_pending_final_y = map_y;
+        s_has_pending_final = true;
+
+        map_x = entry_x;
+        map_y = entry_y;
+        uses_via_point = true;
+      }
+      // 2. If at Entry (or close) but not at Exit, go to Exit
+      else if (dist_to_exit > 8.0f) {
+        Serial.printf("NAV: Crossing Zone. Step 2: Go to Exit (%d, %d)\n",
+                      exit_x, exit_y);
+        s_pending_final_x = map_x;
+        s_pending_final_y = map_y;
+        s_has_pending_final = true;
+
+        map_x = exit_x;
+        map_y = exit_y;
+        uses_via_point = true;
+      }
+      // 3. If passed Exit, proceed to Final (Fallthrough)
     }
   }
 

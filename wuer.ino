@@ -19,8 +19,8 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <Adafruit_VL53L0X.h> // <--- 加这一行
 #include <Arduino.h>
-
 // 包含自定义模块头文件 / Include custom module headers
 #include "src/include/chassis_v2.h" // 使用新的Chassis V2
 #include "src/include/encoder.h"
@@ -36,6 +36,11 @@
 #include "src/include/vive_sensor.h"
 #include "src/include/wall_following_v2.h"
 #include <Wire.h>
+
+// Feature Flags
+#define USE_TOPHAT                                                             \
+  0 // Set to 1 to enable Tophat, 0 to disable (prevent I2C conflicts when
+    // missing)
 
 static const char *TAG = "MAIN";
 
@@ -68,12 +73,23 @@ static void sensor_update_task(void *pvParameters) {
   Serial.flush();
 
   while (1) {
-    // 1) 读取两个实际存在的 ToF：SD1(Front) + SD2(Left-Front)
-    tof_read_all(&top_tof, &front_tof, &left_front_tof, &left_rear_tof);
+    // Check if Wall Following is running (Direct Mode)
+    // If running, IT controls the sensors directly! We must back off.
+    wf_status_t wf_stat;
+    bool wf_active = (wall_following_v2_get_status(&wf_stat) == ESP_OK &&
+                      wf_stat.is_running);
 
-    // 2) 读取 IMU（时间很短），插在两次 ToF 读取之间
-    esp_err_t ret = imu_read(&imu_data);
-    (void)ret; // 暂时不检查返回值
+    if (!wf_active) {
+      // 1) 读取两个实际存在的 ToF：SD1(Front) + SD2(Left-Front)
+      tof_read_all(&top_tof, &front_tof, &left_front_tof, &left_rear_tof);
+
+      // 2) 读取 IMU（时间很短），插在两次 ToF 读取之间
+      esp_err_t ret = imu_read(&imu_data);
+      (void)ret;
+    } else {
+      // Wall Following is active, just sleep to yield CPU
+      // We do NOT touch the I2C bus here.
+    }
 
     // 3) 周期 50ms 左右
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -173,27 +189,38 @@ static void status_monitor_task(void *pvParameters) {
     Serial.println("Sensor Data:");
 
     // ToF sensors - 使用缓存接口（非阻塞）
-    // 现在的实际布置：
-    //   SD1 -> 前方 ToF
-    //   SD2 -> 右侧 ToF
-    //   其余通道暂不使用
-    uint16_t front_tof = tof_get_cached_front_distance();
-    uint16_t left_front_tof = tof_get_cached_left_front_distance();
+    // 如果 WF 正在运行，这里的数据可能不再更新（因为 sensor_update_task 停了）
+    // 所以应当提示 User
+    wf_status_t wf_monitor;
+    bool wf_running_mon =
+        (wall_following_v2_get_status(&wf_monitor) == ESP_OK &&
+         wf_monitor.is_running);
 
-    Serial.print("  Front ToF (SD1): ");
-    if (front_tof == 0xFFFF) {
-      Serial.println("N/A");
+    if (wf_running_mon) {
+      Serial.println("  ToF Sensors: [DIRECT CONTROL BY WF]");
+      Serial.print("  WF Front: ");
+      Serial.println(wf_monitor.tof_front_mm);
+      Serial.print("  WF Right: ");
+      Serial.println(wf_monitor.tof_right_mm);
     } else {
-      Serial.print(front_tof);
-      Serial.println(" mm");
-    }
+      uint16_t front_tof = tof_get_cached_front_distance();
+      uint16_t left_front_tof = tof_get_cached_left_front_distance();
 
-    Serial.print("  Left-Front ToF (SD2): ");
-    if (left_front_tof == 0xFFFF) {
-      Serial.println("N/A");
-    } else {
-      Serial.print(left_front_tof);
-      Serial.println(" mm");
+      Serial.print("  Front ToF (SD1): ");
+      if (front_tof == 0xFFFF) {
+        Serial.println("N/A");
+      } else {
+        Serial.print(front_tof);
+        Serial.println(" mm");
+      }
+
+      Serial.print("  Left-Front ToF (SD2): ");
+      if (left_front_tof == 0xFFFF) {
+        Serial.println("N/A");
+      } else {
+        Serial.print(left_front_tof);
+        Serial.println(" mm");
+      }
     }
 
     // IMU data
@@ -209,27 +236,28 @@ static void status_monitor_task(void *pvParameters) {
     Serial.println(" °C");
 
     // Wall-following debug (pose + heading)
-    wf2_status_t wf_status;
+    wf_status_t wf_status;
     if (wall_following_v2_get_status(&wf_status) == ESP_OK &&
         wf_status.is_running) {
       Serial.println();
       Serial.println("Wall Following V2 Debug:");
       Serial.print("  State: ");
       Serial.println(wf_status.state);
-      Serial.print("  Stage: ");
-      Serial.println(wf_status.stage);
+      Serial.print("  Elapsed Time: ");
+      Serial.print(wf_status.elapsed_ms);
+      Serial.println(" ms");
       Serial.print("  Pose (x, y): ");
-      Serial.print(wf_status.current_x, 1);
+      Serial.print(wf_status.odo_x_m, 2);
       Serial.print(", ");
-      Serial.print(wf_status.current_y, 1);
-      Serial.println(" in");
-      Serial.print("  Heading / Target: ");
-      Serial.print(wf_status.current_heading, 1);
+      Serial.print(wf_status.odo_y_m, 2);
+      Serial.println(" m");
+      Serial.print("  Heading: ");
+      Serial.print(wf_status.odo_heading_rad * 180.0f / 3.14159f, 1);
       Serial.println(" deg");
       Serial.print("  ToF R/F: ");
-      Serial.print(wf_status.tof_right);
+      Serial.print(wf_status.tof_right_mm);
       Serial.print(" / ");
-      Serial.println(wf_status.tof_front);
+      Serial.println(wf_status.tof_front_mm);
     }
 
     // Vive positioning data
@@ -533,8 +561,12 @@ void setup() {
   Serial.println("OK: Web server initialized");
   Serial.flush();
 
-  // Initialize Tophat
-  tophat_init();
+  // Initialize Tophat (Conditional)
+  if (USE_TOPHAT) {
+    tophat_init();
+  } else {
+    Serial.println("Tophat disabled by USE_TOPHAT flag.");
+  }
 
   // 在导航初始化前检查内存
   Serial.println();
@@ -610,10 +642,11 @@ void setup() {
 
   // Create sensor update task (ToF + IMU) on Core 0
   // I2C传感器读取，放在Core 0避免干扰控制
-  xTaskCreatePinnedToCore(sensor_update_task, "sensor_upd", 3072, NULL, 2,
+  // 提高优先级至10，避免被其他低优先级的WiFi辅助任务饿死
+  xTaskCreatePinnedToCore(sensor_update_task, "sensor_upd", 3072, NULL, 10,
                           &sensor_update_task_handle, 0);
   Serial.println(
-      "  [Core 0] sensor_update_task (Priority 2, 20Hz, Stack: 3KB)");
+      "  [Core 0] sensor_update_task (Priority 10, 20Hz, Stack: 3KB)");
 
   // Create status monitoring task on Core 0
   // 低优先级，串口打印不影响控制
@@ -638,9 +671,13 @@ void setup() {
   Serial.println(
       "  [Core 1] chassis_control_task (Priority 5, 100Hz, Stack: 2.5KB)");
 
-  xTaskCreatePinnedToCore(tophat_task, "tophat", 2048, NULL, 3,
-                          &tophat_task_handle, 1);
-  Serial.println("  [Core 1] tophat_task (Priority 3, 2Hz, Stack: 2KB)");
+  if (USE_TOPHAT) {
+    xTaskCreatePinnedToCore(tophat_task, "tophat", 2048, NULL, 3,
+                            &tophat_task_handle, 1);
+    Serial.println("  [Core 1] tophat_task (Priority 3, 2Hz, Stack: 2KB)");
+  } else {
+    Serial.println("  [Core 1] tophat_task DISABLED");
+  }
 
   Serial.println();
   Serial.println("========================================");
