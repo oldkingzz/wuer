@@ -72,7 +72,7 @@ static void wf2_task(void *arg) {
     if (dist_front > 10 && dist_front < WF_FRONT_STOP_MM) {
 
       // Safety: If TOO CLOSE (considering sensor offset), Back up!
-      if (dist_front < 150) {
+      if (dist_front < 130) {
         lin_cmd = -0.15f; // Back up slowly
         ang_cmd = 0.0f;
         // ESP_LOGD(TAG, "Too Close! Backing up: Front=%d", dist_front);
@@ -140,9 +140,9 @@ esp_err_t wall_following_v2_start(void) {
 
   // DASH: Move forward 0.5m at 0.4m/s before starting Wall Following
   // This helps to leave the start area quickly
-  ESP_LOGI(TAG, "Wall Following START: Dashing 0.5m...");
-  chassis_v2_move_dist_blocking(0.5f, 0.4f);
-  ESP_LOGI(TAG, "Dash Complete. Activating Wall Following Logic.");
+  // ESP_LOGI(TAG, "Wall Following START: Dashing 0.5m...");
+  // chassis_v2_move_dist_blocking(0.5f, 0.4f);
+  // ESP_LOGI(TAG, "Dash Complete. Activating Wall Following Logic.");
 
   g_status.state = WF2_RUNNING;
   g_status.is_running = true;

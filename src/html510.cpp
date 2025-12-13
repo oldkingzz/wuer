@@ -25,7 +25,9 @@
 
 #include "include/encoder.h"
 #include "include/imu_sensor.h"
+#include "include/servo_control.h"
 #include "include/tof_sensor.h"
+#include "include/tophat.h"
 #include "include/user_input.h"
 #include "include/vive_navigation.h"
 #include "include/vive_sensor.h"
@@ -60,6 +62,9 @@ static const char *TAG = "WEB_SERVER";
 // Global chassis velocity values
 static float g_chassis_linear_velocity = 0.0f;  // m/s
 static float g_chassis_angular_velocity = 0.0f; // rad/s
+
+// External reference to packet counter in wuer.ino
+extern volatile uint32_t g_wifi_packet_count;
 
 // Manual control enable flag (disable when in autonomous mode)
 static bool g_manual_control_enabled = true;
@@ -289,6 +294,9 @@ static esp_err_t set_chassis_velocity_handler(httpd_req_t *req) {
 
         ESP_LOGI(TAG, "Chassis velocity: linear=%.3f m/s, angular=%.3f rad/s",
                  g_chassis_linear_velocity, g_chassis_angular_velocity);
+
+        // Count as a command packet
+        g_wifi_packet_count++;
       }
     }
   }
@@ -435,6 +443,9 @@ static esp_err_t start_nav_preset_handler(httpd_req_t *req) {
         Serial.printf("WEB: startNavPreset received id=%d\n", goal_id);
         ESP_LOGI(TAG, "startNavPreset: goal_id=%d", goal_id);
         ret = nav_mission_start((nav_goal_id_t)goal_id);
+
+        // Count as a command packet
+        g_wifi_packet_count++;
       }
     }
   }
@@ -596,13 +607,15 @@ static esp_err_t get_sensor_data_handler(httpd_req_t *req) {
            "\"vive2_y\":%u,"
            "\"vive2_valid\":%s,"
            "\"wall_follow_state\":\"%s\","
-           "\"wall_follow_running\":%s"
+           "\"wall_follow_running\":%s,"
+           "\"tophat_penalized\":%s"
            "}",
            tof_front, tof_left_front, tof_left_rear, gyro_z, accel_x, accel_y,
            temp, encoder_left, encoder_right, vive1_x, vive1_y,
            vive1_valid ? "true" : "false", vive2_x, vive2_y,
            vive2_valid ? "true" : "false", wf_state_str,
-           (wf_available && wf_status.is_running) ? "true" : "false");
+           (wf_available && wf_status.is_running) ? "true" : "false",
+           tophat_is_penalized() ? "true" : "false");
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_send(req, json_response, strlen(json_response));
@@ -763,6 +776,36 @@ static const httpd_uri_t get_wall_follow_status = {
     .user_ctx = NULL};
 
 /**
+ * @brief HTTP GET handler for setServoAngle endpoint
+ */
+static esp_err_t set_servo_angle_handler(httpd_req_t *req) {
+  char buf[100];
+  size_t buf_len = httpd_req_get_url_query_len(req) + 1;
+  if (buf_len > 1 && buf_len < sizeof(buf)) {
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+      char angle_param[32];
+      if (httpd_query_key_value(buf, "angle", angle_param,
+                                sizeof(angle_param)) == ESP_OK) {
+        int angle = atoi(angle_param);
+        servo_set_angle(angle);
+        // ESP_LOGI(TAG, "Servo set to %d", angle);
+
+        // Count as a command packet
+        g_wifi_packet_count++;
+      }
+    }
+  }
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_send(req, "OK", 2);
+  return ESP_OK;
+}
+
+static const httpd_uri_t set_servo_angle = {.uri = "/setServoAngle",
+                                            .method = HTTP_GET,
+                                            .handler = set_servo_angle_handler,
+                                            .user_ctx = NULL};
+
+/**
  * @brief Start HTTP server
  */
 static httpd_handle_t start_webserver(void) {
@@ -794,12 +837,47 @@ static httpd_handle_t start_webserver(void) {
     httpd_register_uri_handler(server, &get_sensor_data);
     httpd_register_uri_handler(server, &start_wall_follow);
     httpd_register_uri_handler(server, &stop_wall_follow);
-    httpd_register_uri_handler(server, &get_wall_follow_status);
+    // Register temporary sweep test (defined below)
+    static const httpd_uri_t test_servo_sweep = {
+        .uri = "/testServoSweep",
+        .method = HTTP_GET,
+        .handler = [](httpd_req_t *req) -> esp_err_t {
+          static TaskHandle_t s_sweep_task = NULL;
+
+          // Check if task is running (simple check)
+          if (s_sweep_task != NULL && eTaskGetState(s_sweep_task) != eDeleted) {
+            // Stop it
+            servo_stop_sweep();
+            s_sweep_task =
+                NULL; // Flag will stop the loop, task will delete itself
+            httpd_resp_send(req, "STOPPED", 7);
+          } else {
+            // Start it
+            xTaskCreate(
+                [](void *pvParam) {
+                  servo_sweep_0_60();
+                  s_sweep_task = NULL; // Clear handle when done
+                  vTaskDelete(NULL);
+                },
+                "servoSweep", 2048, NULL, 5, &s_sweep_task);
+            httpd_resp_send(req, "STARTED", 7);
+          }
+          return ESP_OK;
+        },
+        .user_ctx = NULL};
+    httpd_register_uri_handler(server, &test_servo_sweep);
+
     return server;
   }
 
   ESP_LOGE(TAG, "Failed to start HTTP server");
   return NULL;
+}
+
+uint32_t web_server_get_packet_count_reset(void) {
+  uint32_t count = g_wifi_packet_count;
+  g_wifi_packet_count = 0;
+  return count;
 }
 
 /**

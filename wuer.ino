@@ -28,7 +28,9 @@
 #include "src/include/i2c_bus.h"
 #include "src/include/imu_sensor.h"
 #include "src/include/motor_driver.h"
+#include "src/include/servo_control.h"
 #include "src/include/tof_sensor.h"
+#include "src/include/tophat.h"
 #include "src/include/user_input.h"
 #include "src/include/vive_navigation.h"
 #include "src/include/vive_sensor.h"
@@ -42,6 +44,10 @@ static TaskHandle_t encoder_update_task_handle = NULL;
 static TaskHandle_t status_monitor_task_handle = NULL;
 static TaskHandle_t chassis_control_task_handle = NULL;
 static TaskHandle_t sensor_update_task_handle = NULL;
+static TaskHandle_t tophat_task_handle = NULL;
+
+// Global packet counter for Tophat
+volatile uint32_t g_wifi_packet_count = 0;
 
 /**
  * @brief 传感器更新任务（统一管理 TCA 上的 ToF + IMU 读取）
@@ -279,6 +285,16 @@ static void chassis_control_task(void *pvParameters) {
   while (1) {
     // Only control chassis if manual control is enabled
     // (disabled during wall following or navigation)
+    // Also disabled if Tophat penalty is active
+    if (tophat_is_penalized()) {
+      // Stop everything!
+      chassis_v2_set_velocity(0, 0);
+      last_linear = 0;
+      last_angular = 0;
+      vTaskDelay(pdMS_TO_TICKS(100)); // Wait a bit
+      continue;
+    }
+
     if (web_server_is_manual_control_enabled()) {
       // Get chassis velocity from web interface
       float linear_velocity = web_server_get_linear_velocity();
@@ -303,7 +319,35 @@ static void chassis_control_task(void *pvParameters) {
 }
 
 /**
+ * @brief Tophat heartbeat task
+ */
+static void tophat_task(void *pvParameters) {
+  while (1) {
+    // Atomic read and reset of counter
+    uint32_t count = web_server_get_packet_count_reset();
+
+    // Try to send heartbeat
+    esp_err_t ret = tophat_send_heartbeat(count);
+
+    // If "Not inited" (-1/ESP_FAIL) is returned because not inited, try to
+    // init!
+    if (ret != ESP_OK) {
+      // We can try to init here if it failed
+      // This covers the case where Setup didn't reach it, or it failed
+      // dynamically But we don't want to spam init if hardware is missing.
+      // Check if it's strictly not inited state?
+      // Actually tophat_init() checks g_tophat_inited internally.
+      Serial.println("[TOPHAT_TASK] Retrying init...");
+      tophat_init();
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+}
+
+/**
  * @brief Arduino setup函数 - 系统初始化
+
  * Arduino setup function - System initialization
  *
  * 对应ESP-IDF的app_main()函数
@@ -453,6 +497,16 @@ void setup() {
   Serial.println("OK: Chassis V2 control initialized");
   Serial.flush();
 
+  Serial.println("Step 9.5/10: Initializing servo...");
+  Serial.flush();
+  ret = servo_init();
+  if (ret != ESP_OK) {
+    Serial.println("WARNING: Servo init failed");
+  } else {
+    Serial.println("OK: Servo initialized");
+  }
+  Serial.flush();
+
   // 在WiFi初始化前检查内存
   Serial.println();
   Serial.println("========================================");
@@ -478,6 +532,9 @@ void setup() {
   }
   Serial.println("OK: Web server initialized");
   Serial.flush();
+
+  // Initialize Tophat
+  tophat_init();
 
   // 在导航初始化前检查内存
   Serial.println();
@@ -580,6 +637,10 @@ void setup() {
                           &chassis_control_task_handle, 1);
   Serial.println(
       "  [Core 1] chassis_control_task (Priority 5, 100Hz, Stack: 2.5KB)");
+
+  xTaskCreatePinnedToCore(tophat_task, "tophat", 2048, NULL, 3,
+                          &tophat_task_handle, 1);
+  Serial.println("  [Core 1] tophat_task (Priority 3, 2Hz, Stack: 2KB)");
 
   Serial.println();
   Serial.println("========================================");

@@ -25,9 +25,24 @@ void i2c_bus_lock(void);
  */
 void i2c_bus_unlock(void);
 
+/**
+ * @brief Write a single byte to an I2C device
+ * @param addr I2C address
+ * @param data Byte to write
+ * @return ESP_OK or ESP_FAIL
+ */
+int i2c_bus_write_byte(uint8_t addr, uint8_t data);
+
+/**
+ * @brief Read a single byte from an I2C device
+ * @param addr I2C address
+ * @param data Pointer to store read byte
+ * @return ESP_OK or ESP_FAIL
+ */
+int i2c_bus_read_byte(uint8_t addr, uint8_t *data);
+
 #ifdef __cplusplus
 }
 #endif
 
 #endif // I2C_BUS_H
-
